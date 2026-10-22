@@ -1,0 +1,12 @@
+{
+  "periode": "7 derniers jours",
+  "plateformes": {
+    "Instagram": {"abonnes": 38420, "evolution_abonnes": 912, "portee": 214000, "taux_engagement": 5.8, "meilleur_post": "Reel — Ndolé de Maman (96k vues)", "pire_post": "Photo — Menu du jour (1,2k vues)"},
+    "TikTok": {"abonnes": 61200, "evolution_abonnes": 2340, "vues": 880000, "taux_engagement": 7.9, "meilleur_post": "Les secrets de Maman #3 (410k vues)", "pire_post": "Tuto découpe plantain (8k vues)"},
+    "Facebook": {"abonnes": 9800, "evolution_abonnes": 45, "portee": 22000, "taux_engagement": 2.1, "meilleur_post": "Photo — Poulet DG", "pire_post": "Lien vers le site"},
+    "YouTube Shorts": {"abonnes": 4300, "evolution_abonnes": 380, "vues": 95000, "taux_engagement": 4.4, "meilleur_post": "Plantain 3 façons", "pire_post": "Ambiance du samedi"},
+    "LinkedIn": {"abonnes": 1250, "evolution_abonnes": 60, "portee": 7400, "taux_engagement": 3.2, "meilleur_post": "Pourquoi j'ai ouvert Resto-Afrik", "pire_post": "Recrutement serveur"}
+  },
+  "heures_fortes": {"Instagram": "12h-13h et 19h-21h", "TikTok": "18h-22h", "Facebook": "11h-13h", "LinkedIn": "8h-9h (mardi, jeudi)"},
+  "restaurant": {"couverts_semaine": 412, "mardi": 31, "mercredi": 38, "samedi": 118, "note_google": 4.4, "nb_avis_google": 612}
+}

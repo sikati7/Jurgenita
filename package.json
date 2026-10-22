@@ -1,0 +1,22 @@
+{
+  "name": "jurgenita",
+  "version": "1.0.0",
+  "description": "Jurgenita — assistante IA type Jarvis pour créateurs de contenu et community managers",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "check": "node --check server.js && node --check src/*.js && node --check public/app.js"
+  },
+  "author": "",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.1.0",
+    "zod": "^4.6.7"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "private": true
+}

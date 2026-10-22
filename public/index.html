@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Jurgenita</title>
+  <meta name="theme-color" content="#05080f">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&family=Inter:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="grid-bg" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-dot"></span>
+      <span class="brand-name">J·U·R·G·E·N·I·T·A</span>
+    </div>
+    <div class="top-info">
+      <span id="clock" class="clock">--:--</span>
+      <span id="mode" class="badge">…</span>
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav class="sidebar" aria-label="Modules">
+      <button class="nav-btn active" data-view="reveil"><span>☀</span>Réveil</button>
+      <button class="nav-btn" data-view="mails"><span>✉</span>Boîte mail</button>
+      <button class="nav-btn" data-view="studio"><span>✦</span>Studio</button>
+      <button class="nav-btn" data-view="communaute"><span>◎</span>Communauté</button>
+      <button class="nav-btn" data-view="calendrier"><span>▦</span>Calendrier</button>
+      <button class="nav-btn" data-view="stats"><span>⟋</span>Stats</button>
+      <button class="nav-btn" data-view="profil"><span>⚙</span>Profil</button>
+    </nav>
+
+    <main class="main">
+      <!-- RÉVEIL -->
+      <section class="view active" id="view-reveil">
+        <div class="core">
+          <div class="orb" id="orb" role="button" tabindex="0" aria-label="Parler à Jurgenita">
+            <canvas id="orb-canvas" width="320" height="320"></canvas>
+            <div class="ring r1"></div><div class="ring r2"></div><div class="ring r3"></div>
+            <div class="orb-core"></div>
+          </div>
+          <p class="status-line" id="status-line">En veille. Touchez l'orbe ou dites « Jurgenita ».</p>
+          <div class="core-actions">
+            <button class="btn primary" id="btn-briefing">☀ Lancer le briefing du matin</button>
+            <label class="alarm">
+              Réveil auto
+              <input type="time" id="alarm-time">
+              <input type="checkbox" id="alarm-on" aria-label="Activer le réveil">
+            </label>
+          </div>
+        </div>
+        <div id="briefing" class="briefing"></div>
+      </section>
+
+      <!-- MAILS -->
+      <section class="view" id="view-mails">
+        <div class="view-head">
+          <h2>Boîte mail</h2>
+          <p class="muted">Jurgenita trie et prépare les réponses. Rien ne part sans vous.</p>
+        </div>
+        <div class="split">
+          <ul id="mail-list" class="list"></ul>
+          <div id="mail-detail" class="panel detail"><p class="muted">Sélectionnez un email.</p></div>
+        </div>
+      </section>
+
+      <!-- STUDIO -->
+      <section class="view" id="view-studio">
+        <div class="view-head">
+          <h2>Studio de contenu</h2>
+          <p class="muted">Une idée en entrée, un pack multi-plateformes prêt à tourner en sortie.</p>
+        </div>
+        <form id="studio-form" class="panel form">
+          <label>Sujet
+            <input id="studio-sujet" required placeholder="ex. Le koki de Maman, recette en 3 étapes">
+          </label>
+          <fieldset class="chips" id="studio-plateformes">
+            <legend>Plateformes</legend>
+          </fieldset>
+          <label>Objectif
+            <select id="studio-objectif">
+              <option>Engagement et nouveaux abonnés</option>
+              <option>Remplir le restaurant en semaine</option>
+              <option>Vendre une offre ou un produit</option>
+              <option>Contenu sponsorisé pour une marque</option>
+              <option>Image de marque et storytelling</option>
+            </select>
+          </label>
+          <button class="btn primary" type="submit">✦ Générer le pack</button>
+        </form>
+        <div id="studio-result"></div>
+      </section>
+
+      <!-- COMMUNAUTÉ -->
+      <section class="view" id="view-communaute">
+        <div class="view-head">
+          <h2>Communauté</h2>
+          <button class="btn" id="btn-triage">◎ Analyser et préparer les réponses</button>
+        </div>
+        <p id="community-summary" class="panel summary hidden"></p>
+        <ul id="community-list" class="list cards"></ul>
+        <div id="community-ideas"></div>
+      </section>
+
+      <!-- CALENDRIER -->
+      <section class="view" id="view-calendrier">
+        <div class="view-head">
+          <h2>Calendrier éditorial</h2>
+        </div>
+        <form id="cal-form" class="panel form inline">
+          <input type="date" id="cal-date" required>
+          <select id="cal-plateforme"></select>
+          <input id="cal-format" placeholder="Format" value="Reel">
+          <input id="cal-sujet" placeholder="Sujet" required>
+          <button class="btn" type="submit">+ Ajouter</button>
+        </form>
+        <div id="cal-grid" class="cal-grid"></div>
+        <h3 class="sub">Brouillons en attente de validation</h3>
+        <ul id="drafts" class="list"></ul>
+      </section>
+
+      <!-- STATS -->
+      <section class="view" id="view-stats">
+        <div class="view-head"><h2>Tableau de bord</h2><p class="muted" id="stats-period"></p></div>
+        <div id="stats-tiles" class="tiles"></div>
+        <div class="panel">
+          <h3 class="sub">Abonnés par plateforme</h3>
+          <div id="stats-bars" class="bars"></div>
+        </div>
+        <div id="stats-resto" class="tiles"></div>
+      </section>
+
+      <!-- PROFIL -->
+      <section class="view" id="view-profil">
+        <div class="view-head">
+          <h2>Profil &amp; personnalisation</h2>
+          <p class="muted">Jurgenita s'appuie sur ces informations pour chaque décision.</p>
+        </div>
+        <form id="profile-form" class="panel form"></form>
+        <div class="panel">
+          <h3 class="sub">Mémoire de Jurgenita</h3>
+          <ul id="notes" class="list"></ul>
+        </div>
+        <button class="btn danger" id="btn-reset">Réinitialiser les données de démo</button>
+      </section>
+    </main>
+
+    <!-- CONSOLE -->
+    <aside class="console" aria-label="Conversation">
+      <div class="console-head">
+        <span>Console</span>
+        <button class="icon-btn" id="btn-new-chat" title="Nouvelle conversation">↺</button>
+        <button class="icon-btn" id="btn-voice-toggle" title="Voix de Jurgenita" aria-pressed="true">🔊</button>
+      </div>
+      <div id="chat-log" class="chat-log" aria-live="polite"></div>
+      <div class="suggestions" id="suggestions">
+        <button>Que dois-je répondre à Épices du Monde ?</button>
+        <button>Comment gérer le commentaire du troll ?</button>
+        <button>Quelle est la meilleure heure pour publier ?</button>
+        <button>Planifie la vidéo sur le koki samedi</button>
+      </div>
+      <form id="chat-form" class="chat-form">
+        <button type="button" class="mic" id="btn-mic" title="Parler (maintenir Espace)">🎙</button>
+        <input id="chat-input" autocomplete="off" placeholder="Demandez à Jurgenita…">
+        <button class="btn primary" type="submit">➤</button>
+      </form>
+      <label class="wake"><input type="checkbox" id="wake-on"> Écoute permanente (« Jurgenita… »)</label>
+    </aside>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

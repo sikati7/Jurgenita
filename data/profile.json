@@ -1,0 +1,23 @@
+{
+  "prenom": "Jean",
+  "appellation": "Boss",
+  "marque": "Resto-Afrik",
+  "activite": "Restaurant et média culinaire africain : recettes, coulisses de cuisine, culture et street-food",
+  "niche": "Cuisine africaine (Afrique centrale et de l'Ouest), food content, storytelling culturel",
+  "ton_de_marque": "Chaleureux, fier de ses racines, drôle sans être moqueur, tutoiement sur les réseaux, vouvoiement par mail professionnel",
+  "plateformes": ["Instagram", "TikTok", "Facebook", "YouTube Shorts", "LinkedIn"],
+  "objectifs": [
+    "Atteindre 50 000 abonnés Instagram d'ici la fin du trimestre",
+    "Remplir le restaurant le mardi et le mercredi soir",
+    "Signer 2 partenariats de marque rémunérés par mois",
+    "Lancer une série vidéo hebdomadaire « Les secrets de Maman »"
+  ],
+  "regles": [
+    "Ne jamais accepter un partenariat avec une marque d'alcool fort",
+    "Toujours répondre aux avis négatifs sous 24 h, en privé si possible",
+    "Prix plancher d'un post sponsorisé : 450 €, d'un Reel : 800 €"
+  ],
+  "langue": "fr",
+  "fuseau": "Europe/Paris",
+  "heure_reveil": "07:30"
+}
