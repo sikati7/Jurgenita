@@ -4,6 +4,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { betaZodOutputFormat, betaZodTool } from "@anthropic-ai/sdk/helpers/beta/zod";
 import { z } from "zod";
 import * as store from "./store.js";
+import * as sources from "./sources.js";
 import { PERSONA, VOICE_HINT } from "./prompts.js";
 import * as schemas from "./schemas.js";
 
@@ -27,13 +28,13 @@ function today() {
 
 export class RefusalError extends Error {}
 
-async function structured(schema, prompt, effort = "medium") {
+async function structured(schema, content, effort = "medium") {
   const response = await getClient().beta.messages.parse({
     model: MODEL,
     max_tokens: 16000,
     system: SYSTEM,
     output_config: { effort, format: betaZodOutputFormat(schema) },
-    messages: [{ role: "user", content: prompt }],
+    messages: [{ role: "user", content }],
     ...FALLBACK,
   });
   if (response.stop_reason === "refusal") {
@@ -47,8 +48,8 @@ async function structured(schema, prompt, effort = "medium") {
 
 const json = (value) => JSON.stringify(value, null, 2);
 
-export function briefing() {
-  const ctx = store.snapshot();
+export async function briefing() {
+  const ctx = await sources.snapshot();
   return structured(
     schemas.Briefing,
     `Nous sommes le ${today()}. C'est l'heure du réveil : prépare le briefing du matin.
@@ -65,8 +66,8 @@ ${json(ctx)}
   );
 }
 
-export function emailReply({ id, intention }) {
-  const email = store.read("inbox").find((m) => m.id === id);
+export async function emailReply({ id, intention }) {
+  const email = (await sources.inbox()).find((m) => m.id === id);
   if (!email) throw new Error(`Email ${id} introuvable`);
   return structured(
     schemas.EmailReply,
@@ -74,12 +75,12 @@ export function emailReply({ id, intention }) {
 Intention de l'utilisateur : ${intention || "à toi de choisir la meilleure réponse"}
 
 <profil>${json(store.read("profile"))}</profil>
-<statistiques>${json(store.read("stats"))}</statistiques>
+<statistiques>${json(await sources.stats())}</statistiques>
 <email>${json(email)}</email>`,
   );
 }
 
-export function contentStudio({ sujet, plateformes, objectif }) {
+export async function contentStudio({ sujet, plateformes, objectif }) {
   return structured(
     schemas.ContentPack,
     `Crée un pack de contenu complet.
@@ -90,17 +91,34 @@ Objectif : ${objectif || "engagement et nouveaux abonnés"}
 Pour chaque plateforme, adapte le format, l'accroche et la légende à ses codes. Le script vidéo doit tenir en 30 à 45 secondes.
 
 <profil>${json(store.read("profile"))}</profil>
-<statistiques>${json(store.read("stats"))}</statistiques>`,
+<statistiques>${json(await sources.stats())}</statistiques>`,
   );
 }
 
-export function communityTriage() {
+export async function communityTriage() {
   return structured(
     schemas.CommunityTriage,
     `Analyse les interactions récentes de la communauté, propose une réponse pour chacune et la modération adaptée. Repère aussi les idées de contenu qu'elles inspirent.
 
 <profil>${json(store.read("profile"))}</profil>
-<interactions>${json(store.read("community"))}</interactions>`,
+<interactions>${json(await sources.community())}</interactions>`,
+  );
+}
+
+// Analyse d'une photo ou d'images extraites d'une vidéo.
+export function visionReport({ images, contexte, video }) {
+  return structured(
+    schemas.VisionReport,
+    [
+      ...images.map((img) => ({ type: "image", source: { type: "base64", media_type: img.media_type, data: img.data } })),
+      {
+        type: "text",
+        text: `${video ? `Voici ${images.length} images extraites d'une vidéo, dans l'ordre chronologique.` : "Voici une photo."} Analyse ce contenu comme une directrice de création réseaux sociaux : est-ce qu'il arrête le scroll ? Propose légende, hashtags, recadrage et améliorations concrètes.
+${contexte ? `Contexte donné par l'utilisateur : ${contexte}` : ""}
+
+<profil>${json(store.read("profile"))}</profil>`,
+      },
+    ],
   );
 }
 
@@ -111,25 +129,25 @@ const tools = [
     name: "lire_emails",
     description: "Lit la boîte de réception de l'utilisateur (expéditeur, objet, corps).",
     inputSchema: z.object({}),
-    run: async () => json(store.read("inbox")),
+    run: async () => json(await sources.inbox()),
   }),
   betaZodTool({
     name: "lire_communaute",
     description: "Lit les derniers commentaires, DM et avis sur les réseaux sociaux et Google.",
     inputSchema: z.object({}),
-    run: async () => json(store.read("community")),
+    run: async () => json(await sources.community()),
   }),
   betaZodTool({
     name: "lire_statistiques",
     description: "Lit les statistiques des 7 derniers jours par plateforme et la fréquentation du restaurant.",
     inputSchema: z.object({}),
-    run: async () => json(store.read("stats")),
+    run: async () => json(await sources.stats()),
   }),
   betaZodTool({
     name: "lire_agenda",
     description: "Lit l'agenda du jour.",
     inputSchema: z.object({}),
-    run: async () => json(store.read("agenda")),
+    run: async () => json(await sources.agenda()),
   }),
   betaZodTool({
     name: "lire_calendrier_editorial",

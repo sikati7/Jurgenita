@@ -75,3 +75,16 @@ export const CommunityTriage = z.object({
   })),
   idees_issues_de_la_communaute: z.array(z.string()),
 });
+
+export const VisionReport = z.object({
+  description: z.string().describe("Ce que l'on voit, en une ou deux phrases"),
+  note_accroche: z.number().describe("Note de 0 à 10 : capacité à arrêter le scroll"),
+  verdict: z.string().describe("Avis franc en une phrase"),
+  points_forts: z.array(z.string()),
+  a_ameliorer: z.array(z.string()),
+  recadrage: z.string().describe("Format conseillé (9:16, 4:5, 1:1) et comment recadrer"),
+  plateforme_ideale: z.string(),
+  legende: z.string(),
+  hashtags: z.array(z.string()),
+  idee_de_montage: z.string().describe("Comment en faire une vidéo ou un carrousel plus fort"),
+});

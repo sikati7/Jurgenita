@@ -37,16 +37,3 @@ export function append(name, item) {
 export function reset() {
   fs.rmSync(RUNTIME_DIR, { recursive: true, force: true });
 }
-
-// Instantané de tout le contexte utile à un briefing.
-export function snapshot() {
-  return {
-    profil: read("profile"),
-    emails: read("inbox"),
-    communaute: read("community"),
-    agenda: read("agenda"),
-    statistiques: read("stats"),
-    calendrier: read("calendar"),
-    notes: read("notes"),
-  };
-}

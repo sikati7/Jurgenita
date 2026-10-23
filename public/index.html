@@ -94,6 +94,22 @@
           <button class="btn primary" type="submit">✦ Générer le pack</button>
         </form>
         <div id="studio-result"></div>
+
+        <div class="view-head" style="margin-top:32px">
+          <h2>Analyse photo &amp; vidéo</h2>
+          <p class="muted">Jurgenita note l'accroche et propose légende, recadrage et montage.</p>
+        </div>
+        <div class="panel form">
+          <label class="drop" id="vision-drop">
+            <input type="file" id="vision-file" accept="image/*,video/*" class="visually-hidden">
+            <span>📷 Déposez une photo ou une vidéo ici, ou cliquez pour choisir</span>
+          </label>
+          <label>Contexte (facultatif)
+            <input id="vision-contexte" placeholder="ex. pour un post sponsorisé Épices du Monde">
+          </label>
+          <div id="vision-preview" class="preview"></div>
+        </div>
+        <div id="vision-result"></div>
       </section>
 
       <!-- COMMUNAUTÉ -->
@@ -140,6 +156,10 @@
         <div class="view-head">
           <h2>Profil &amp; personnalisation</h2>
           <p class="muted">Jurgenita s'appuie sur ces informations pour chaque décision.</p>
+        </div>
+        <div class="panel" style="margin-bottom:20px">
+          <h3 class="sub">Connexions</h3>
+          <ul id="connexions" class="list"></ul>
         </div>
         <form id="profile-form" class="panel form"></form>
         <div class="panel">

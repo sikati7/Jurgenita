@@ -131,6 +131,22 @@ export async function communityTriage() {
   };
 }
 
+export async function visionReport({ images, video }) {
+  await pause(900);
+  return {
+    description: video ? `Une vidéo de ${images.length} plans analysés.` : "Une photo de plat.",
+    note_accroche: 7,
+    verdict: "Mode démo : je ne vois pas encore vraiment l'image. Avec une clé API, l'analyse porte sur votre vraie photo.",
+    points_forts: ["Sujet bien centré", "Couleurs chaudes qui donnent faim"],
+    a_ameliorer: ["Rapprochez-vous : la vapeur et la texture vendent le plat", "Ajoutez un geste humain (une main, une cuillère) pour créer du mouvement"],
+    recadrage: "4:5 pour le fil Instagram, 9:16 pour Reels et TikTok, avec le plat dans le tiers supérieur.",
+    plateforme_ideale: "Instagram Reels",
+    legende: "Ça sort de la marmite de Maman 🔥 Tu goûtes en premier ou tu filmes en premier ? 👇",
+    hashtags: ["#cuisineafricaine", "#restoafrik", "#foodparis", "#afrofood"],
+    idee_de_montage: "Commencez par le plat fini, revenez en arrière sur les 3 gestes clés, finissez sur la première bouchée.",
+  };
+}
+
 // Petite base de connaissances pour répondre aux questions d'expertise en démo.
 const KNOWLEDGE = [
   { mots: ["heure", "moment", "quand publier", "horaire"], texte: () => {

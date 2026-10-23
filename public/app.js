@@ -382,7 +382,14 @@ async function selectMail(id) {
       subject, draft),
     el("div", { class: "actions" },
       el("button", { class: "btn", onclick: () => copy(draft.value) }, "Copier"),
-      el("button", { class: "btn", onclick: async () => { await api("/api/drafts", { canal: "email", destinataire: address, objet: subject.value, texte: draft.value }); toast("Brouillon enregistré"); } }, "Enregistrer en brouillon"),
+      el("button", { class: "btn", onclick: async (e) => {
+        e.currentTarget.disabled = true;
+        try {
+          const r = await api("/api/drafts", { canal: "email", destinataire: address, objet: subject.value, texte: draft.value, threadId: m.threadId, messageId: m.messageId });
+          toast(r.gmail ? "Brouillon créé dans Gmail" : "Brouillon enregistré");
+        } catch (err) { toast(err.message); }
+        e.currentTarget.disabled = false;
+      } }, state.connexions?.gmail.connecte ? "Créer le brouillon dans Gmail" : "Enregistrer en brouillon"),
       el("a", { class: "btn primary", href: `mailto:${encodeURIComponent(address)}?subject=${encodeURIComponent(subject.value)}&body=${encodeURIComponent(draft.value)}`, onclick: (e) => { e.currentTarget.href = `mailto:${encodeURIComponent(address)}?subject=${encodeURIComponent(subject.value)}&body=${encodeURIComponent(draft.value)}`; } }, "Ouvrir dans ma messagerie")),
   );
 }
@@ -447,6 +454,92 @@ function renderStudio(r) {
   );
 }
 
+// ---------------------------------------------------------------- Analyse photo / vidéo
+
+// Réduit une image (ou une image de vidéo) en JPEG de 1568 px maximum.
+function toJpeg(source, width, height) {
+  const scale = Math.min(1, 1568 / Math.max(width, height));
+  const canvas = el("canvas", { width: Math.round(width * scale), height: Math.round(height * scale) });
+  canvas.getContext("2d").drawImage(source, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/jpeg", 0.85);
+}
+
+function loadImage(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => { resolve([toJpeg(img, img.naturalWidth, img.naturalHeight)]); URL.revokeObjectURL(img.src); };
+    img.onerror = () => reject(new Error("Image illisible"));
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+// Extrait 4 images réparties sur la durée de la vidéo.
+function videoFrames(file, count = 4) {
+  return new Promise((resolve, reject) => {
+    const video = el("video", { muted: true, playsinline: true, preload: "auto" });
+    video.src = URL.createObjectURL(file);
+    video.onerror = () => reject(new Error("Vidéo illisible dans ce navigateur"));
+    video.onloadedmetadata = async () => {
+      const frames = [];
+      for (let i = 0; i < count; i++) {
+        video.currentTime = (video.duration * (i + 0.5)) / count;
+        await new Promise((r) => { video.onseeked = r; });
+        frames.push(toJpeg(video, video.videoWidth, video.videoHeight));
+      }
+      URL.revokeObjectURL(video.src);
+      resolve(frames);
+    };
+  });
+}
+
+async function analyseMedia(file) {
+  if (!file) return;
+  const isVideo = file.type.startsWith("video/");
+  if (!isVideo && !file.type.startsWith("image/")) { toast("Déposez une photo ou une vidéo"); return; }
+  setStatus("thinking", "J'analyse votre visuel…");
+  $("#vision-result").replaceChildren(el("div", { class: "loading" }, isVideo ? "Extraction des images de la vidéo…" : "Analyse en cours…"));
+  try {
+    const frames = isVideo ? await videoFrames(file) : await loadImage(file);
+    $("#vision-preview").replaceChildren(...frames.map((src) => el("img", { src, alt: "" })));
+    const images = frames.map((src) => ({ media_type: "image/jpeg", data: src.split(",")[1] }));
+    const r = await api("/api/vision", { images, video: isVideo, contexte: $("#vision-contexte").value });
+    renderVision(r);
+    speak(`${r.verdict} Note d'accroche : ${r.note_accroche} sur 10.`);
+    if (!state.voice) setStatus("idle", "Analyse terminée.");
+  } catch (err) {
+    $("#vision-result").replaceChildren(el("p", { class: "panel" }, err.message));
+    setStatus("idle");
+  }
+}
+
+function renderVision(r) {
+  const full = `${r.legende}\n\n${r.hashtags.join(" ")}`;
+  $("#vision-result").replaceChildren(el("div", { class: "panel" },
+    el("div", { class: "score" }, el("span", { class: "score-num" }, `${r.note_accroche}`), el("span", {}, "/10 accroche")),
+    el("p", { style: "font-weight:600" }, r.verdict),
+    el("p", { class: "muted" }, r.description),
+    el("div", { class: "cols", style: "margin-top:12px" },
+      el("div", {}, el("h3", { class: "sub" }, "Points forts"), el("ul", {}, r.points_forts.map((x) => el("li", {}, x)))),
+      el("div", {}, el("h3", { class: "sub" }, "À améliorer"), el("ul", {}, r.a_ameliorer.map((x) => el("li", {}, x))))),
+    el("dl", { class: "post", style: "display:grid;grid-template-columns:auto 1fr;gap:6px 12px" },
+      el("dt", { class: "muted" }, "Recadrage"), el("dd", { style: "margin:0" }, r.recadrage),
+      el("dt", { class: "muted" }, "Plateforme"), el("dd", { style: "margin:0" }, r.plateforme_ideale),
+      el("dt", { class: "muted" }, "Montage"), el("dd", { style: "margin:0" }, r.idee_de_montage)),
+    el("h3", { class: "sub" }, "Légende proposée"),
+    el("p", { style: "white-space:pre-wrap" }, r.legende),
+    el("p", { class: "hashtags" }, r.hashtags.join(" ")),
+    el("button", { class: "btn small", onclick: () => copy(full) }, "Copier légende + hashtags")));
+}
+
+function initVision() {
+  const drop = $("#vision-drop");
+  const input = $("#vision-file");
+  input.addEventListener("change", () => analyseMedia(input.files[0]));
+  drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+  drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+  drop.addEventListener("drop", (e) => { e.preventDefault(); drop.classList.remove("over"); analyseMedia(e.dataTransfer.files[0]); });
+}
+
 // ---------------------------------------------------------------- Communauté
 
 async function renderCommunity() {
@@ -468,7 +561,13 @@ async function renderCommunity() {
       reply || moderation !== "masquer" ? el("div", { class: "suggest" }, area) : null,
       el("div", { class: "meta" },
         el("button", { class: "btn small", onclick: () => copy(area.value) }, "Copier la réponse"),
-        el("button", { class: "btn small", onclick: async () => { await api("/api/drafts", { canal: c.plateforme, destinataire: c.auteur, objet: c.type, texte: area.value }); toast("Réponse mise en attente"); } }, "Mettre en attente")));
+        el("button", { class: "btn small", onclick: async () => { await api("/api/drafts", { canal: c.plateforme, destinataire: c.auteur, objet: c.type, texte: area.value }); toast("Réponse mise en attente"); } }, "Mettre en attente"),
+        c.ref ? el("button", { class: "btn small gold", onclick: async (e) => {
+          if (!area.value.trim() || !confirm(`Publier cette réponse sous le commentaire de ${c.auteur} sur ${c.plateforme} ?\n\n${area.value}`)) return;
+          e.currentTarget.disabled = true;
+          try { await api("/api/community/publish", { reseau: c.reseau, ref: c.ref, message: area.value }); toast("Réponse publiée"); e.currentTarget.textContent = "✓ Publiée"; }
+          catch (err) { toast(err.message); e.currentTarget.disabled = false; }
+        } }, `Publier sur ${c.plateforme}`) : null));
   }));
   if (state.triage) {
     $("#community-summary").textContent = state.triage.synthese;
@@ -538,7 +637,9 @@ async function renderStats() {
     el("div", { class: "tile" },
       el("div", { class: "label" }, name),
       el("div", { class: "value" }, n(p.abonnes)),
-      el("div", { class: `delta${p.taux_engagement < 3 ? " low" : ""}` }, `+${n(p.evolution_abonnes)} · ${String(p.taux_engagement).replace(".", ",")} % d'engagement`))));
+      el("div", { class: `delta${p.taux_engagement < 3 ? " low" : ""}` }, p.source === "réel"
+        ? [`● En direct`, p.interactions_moyennes_par_post != null ? ` · ${n(p.interactions_moyennes_par_post)} interactions / post` : ""].join("")
+        : `+${n(p.evolution_abonnes)} · ${String(p.taux_engagement).replace(".", ",")} % d'engagement`))));
   const max = Math.max(...entries.map(([, p]) => p.abonnes));
   $("#stats-bars").replaceChildren(...entries.map(([name, p]) =>
     el("div", { class: "bar" },
@@ -572,6 +673,7 @@ async function renderProfile() {
       ? el("textarea", { name: k, rows: Math.max(3, p[k].length + 1) }, p[k].join("\n"))
       : el("input", { name: k, value: p[k] ?? "", type: k === "heure_reveil" ? "time" : "text" }))),
     el("button", { class: "btn primary", type: "submit" }, "Enregistrer"));
+  renderConnections();
   $("#notes").replaceChildren(...(notes.length
     ? notes.map((x) => el("li", {}, x.note, el("div", { class: "date" }, fmtDate(x.date))))
     : [el("li", { class: "muted" }, "Rien pour l'instant. Dites par exemple « Retiens que je ne tourne jamais le lundi ».")]));
@@ -596,6 +698,30 @@ $("#btn-reset").addEventListener("click", async () => {
   toast("Données réinitialisées");
   renderProfile();
 });
+
+function renderConnections() {
+  const c = state.connexions;
+  if (!c) return;
+  const line = (name, ok, detail, action) =>
+    el("li", {}, el("div", { class: "row" }, el("b", {}, name), el("span", { class: `tag ${ok ? "positif" : "a_ignorer"}` }, ok ? "Connecté" : "Non connecté")),
+      el("div", { class: "subj", style: "white-space:normal" }, detail), action ? el("div", { style: "margin-top:8px" }, action) : null);
+  $("#connexions").replaceChildren(
+    line("Cerveau (API Claude)", state.mode === "live", state.mode === "live" ? `Modèle ${state.modele}` : "Mode démo : ajoutez ANTHROPIC_API_KEY dans .env puis relancez."),
+    line("Gmail + Google Agenda", c.gmail.connecte,
+      c.gmail.connecte ? "Jurgenita lit vos mails des 3 derniers jours et votre agenda, et crée les brouillons dans Gmail." : c.gmail.configure ? "Identifiants Google présents : il reste à autoriser l'accès." : "Ajoutez GOOGLE_CLIENT_ID et GOOGLE_CLIENT_SECRET dans .env (voir CONNEXIONS.md).",
+      c.gmail.connecte
+        ? el("button", { class: "btn small danger", style: "margin:0", onclick: async () => { await api("/api/google/disconnect", {}); c.gmail.connecte = false; renderConnections(); toast("Google déconnecté"); } }, "Déconnecter")
+        : c.gmail.configure ? el("a", { class: "btn small primary", href: "/auth/google" }, "Connecter mon compte Google") : null),
+    line("Instagram + Facebook", c.meta.configure, c.meta.configure ? "Commentaires et statistiques en direct. Les réponses peuvent être publiées depuis l'onglet Communauté." : "Ajoutez META_ACCESS_TOKEN et META_IG_USER_ID / META_PAGE_ID dans .env (voir CONNEXIONS.md)."),
+    line("Telegram", c.telegram.pret,
+      c.telegram.pret ? `Briefing envoyé chaque jour à ${state.profile?.heure_reveil || "l'heure de réveil"}. Écrivez au bot pour parler à Jurgenita.` : c.telegram.configure ? "Envoyez un message à votre bot : il vous donnera votre TELEGRAM_CHAT_ID." : "Ajoutez TELEGRAM_BOT_TOKEN dans .env (voir CONNEXIONS.md).",
+      c.telegram.pret ? el("button", { class: "btn small", onclick: async (e) => {
+        e.currentTarget.disabled = true;
+        try { await api("/api/telegram/briefing", {}); toast("Briefing envoyé sur Telegram"); } catch (err) { toast(err.message); }
+        e.currentTarget.disabled = false;
+      } }, "Envoyer le briefing maintenant") : null),
+  );
+}
 
 function fillPlatformSelect() {
   $("#cal-plateforme").replaceChildren(...(state.profile?.plateformes || []).map((p) => el("option", {}, p)));
@@ -681,6 +807,9 @@ async function boot() {
   try {
     const status = await api("/api/status");
     state.profile = status.profil;
+    state.connexions = status.connexions;
+    state.mode = status.mode;
+    state.modele = status.modele;
     const badge = $("#mode");
     badge.textContent = status.mode === "live" ? "En ligne" : "Démo";
     badge.title = status.mode === "live" ? status.modele : "Ajoutez une clé API pour le mode réel";
@@ -692,6 +821,7 @@ async function boot() {
   fillPlatformSelect();
   $("#cal-date").value = tomorrow();
   initAlarm();
+  initVision();
   state.inbox = await api("/api/data/inbox").catch(() => []);
 
   const name = state.profile?.appellation || "Boss";
