@@ -165,7 +165,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   const c = sources.connections();
-  console.log(`\n  ◉ JURGENITA en ligne — http://${HOST}:${PORT}`);
+  console.log(`\n  ◉ JURGENITA en ligne — http://${HOST}:${server.address().port}`);
   console.log(LIVE ? `    Cerveau : ${brain.MODEL}` : "    Cerveau : mode démo (ajoutez ANTHROPIC_API_KEY dans .env)");
   console.log(`    Gmail : ${c.gmail.connecte ? "connecté" : c.gmail.configure ? "à connecter depuis le Profil" : "non configuré"}`);
   console.log(`    Instagram / Facebook : ${c.meta.configure ? "connecté" : "non configuré"}`);

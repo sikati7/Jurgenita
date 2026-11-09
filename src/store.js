@@ -7,7 +7,8 @@ import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(here, "..", "data");
-const RUNTIME_DIR = path.join(DATA_DIR, "runtime");
+// Surchargeable pour les tests, qui ne doivent pas toucher aux vraies données.
+const RUNTIME_DIR = process.env.JURGENITA_RUNTIME_DIR || path.join(DATA_DIR, "runtime");
 
 function runtimePath(name) {
   return path.join(RUNTIME_DIR, `${name}.json`);

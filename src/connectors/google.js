@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const TOKEN_FILE = path.join(here, "..", "..", "data", "secrets", "google-token.json");
+const TOKEN_FILE = path.join(process.env.JURGENITA_SECRETS_DIR || path.join(here, "..", "..", "data", "secrets"), "google-token.json");
 const SCOPES = [
   "https://www.googleapis.com/auth/gmail.readonly",
   "https://www.googleapis.com/auth/gmail.compose",
@@ -79,16 +79,20 @@ async function gfetch(url, options = {}) {
 
 const decode = (b64) => Buffer.from(b64.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
 
-function findBody(part) {
-  if (part.mimeType === "text/plain" && part.body?.data) return decode(part.body.data);
+function findPart(part, mimeType) {
+  if (part.mimeType === mimeType && part.body?.data) return decode(part.body.data);
   for (const p of part.parts || []) {
-    const text = findBody(p);
+    const text = findPart(p, mimeType);
     if (text) return text;
   }
-  if (part.mimeType === "text/html" && part.body?.data) {
-    return decode(part.body.data).replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ");
-  }
   return "";
+}
+
+// Le texte brut est préféré ; à défaut, le HTML est réduit à son texte.
+function findBody(payload) {
+  const plain = findPart(payload, "text/plain");
+  if (plain) return plain;
+  return findPart(payload, "text/html").replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ");
 }
 
 export async function inbox({ max = 15 } = {}) {
