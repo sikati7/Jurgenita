@@ -390,12 +390,14 @@ async function selectMail(id) {
     el("div", { class: "actions" },
       el("button", { class: "btn", onclick: () => copy(draft.value) }, "Copier"),
       el("button", { class: "btn", onclick: async (e) => {
-        e.currentTarget.disabled = true;
+        // e.currentTarget n'existe plus après un await : on garde le bouton.
+        const button = e.currentTarget;
+        button.disabled = true;
         try {
           const r = await api("/api/drafts", { canal: "email", destinataire: address, objet: subject.value, texte: draft.value, threadId: m.threadId, messageId: m.messageId });
           toast(r.gmail ? "Brouillon créé dans Gmail" : "Brouillon enregistré");
         } catch (err) { toast(err.message); }
-        e.currentTarget.disabled = false;
+        button.disabled = false;
       } }, state.connexions?.gmail.connecte ? "Créer le brouillon dans Gmail" : "Enregistrer en brouillon"),
       el("a", { class: "btn primary", href: `mailto:${encodeURIComponent(address)}?subject=${encodeURIComponent(subject.value)}&body=${encodeURIComponent(draft.value)}`, onclick: (e) => { e.currentTarget.href = `mailto:${encodeURIComponent(address)}?subject=${encodeURIComponent(subject.value)}&body=${encodeURIComponent(draft.value)}`; } }, "Ouvrir dans ma messagerie")),
   );
@@ -572,9 +574,10 @@ async function renderCommunity() {
         c.ref ? el("button", { class: "btn small gold", onclick: async (e) => {
           const where = c.type === "DM" ? `en message privé à ${c.auteur}` : c.type === "avis" ? `sous l'avis Google de ${c.auteur}` : `sous le commentaire de ${c.auteur} sur ${c.plateforme}`;
           if (!area.value.trim() || !confirm(`Publier cette réponse ${where} ?\n\n${area.value}`)) return;
-          e.currentTarget.disabled = true;
-          try { await api("/api/community/publish", { reseau: c.reseau, ref: c.ref, message: area.value }); toast("Réponse publiée"); e.currentTarget.textContent = "✓ Publiée"; }
-          catch (err) { toast(err.message); e.currentTarget.disabled = false; }
+          const button = e.currentTarget;
+          button.disabled = true;
+          try { await api("/api/community/publish", { reseau: c.reseau, ref: c.ref, message: area.value }); toast("Réponse publiée"); button.textContent = "✓ Publiée"; }
+          catch (err) { toast(err.message); button.disabled = false; }
         } }, c.type === "DM" ? "Répondre en privé" : c.type === "avis" ? "Répondre à l'avis" : `Publier sur ${c.plateforme}`) : null));
   }));
   if (state.triage) {
@@ -648,9 +651,15 @@ function editCalendarItem(id) {
   };
   const values = () => Object.fromEntries(Object.entries(f).map(([k, input]) => [k, input.value]));
   const act = (label, cls, fn) => el("button", { class: `btn small ${cls}`, type: "button", onclick: async (e) => {
-    e.currentTarget.disabled = true;
-    try { await fn(); await renderCalendar(); } catch (err) { toast(err.message); }
-    e.currentTarget.disabled = false;
+    const button = e.currentTarget;
+    button.disabled = true;
+    try {
+      await fn();
+      await renderCalendar();
+      // L'éditeur reflète le nouveau statut, sauf si le contenu a été supprimé ou l'éditeur fermé.
+      if (!box.classList.contains("hidden") && calendarItems.some((i) => i.id === id)) return editCalendarItem(id);
+    } catch (err) { toast(err.message); }
+    button.disabled = false;
   } }, label);
   const save = (extra = {}) => api("/api/calendar/update", { id, ...values(), ...extra });
   box.classList.remove("hidden");
@@ -809,9 +818,10 @@ function renderConnections() {
     line("Telegram", c.telegram.pret,
       c.telegram.pret ? `Briefing envoyé chaque jour à ${state.profile?.heure_reveil || "l'heure de réveil"}. Écrivez au bot pour parler à Jurgenita.` : c.telegram.configure ? "Envoyez un message à votre bot : il vous donnera votre TELEGRAM_CHAT_ID." : "Ajoutez TELEGRAM_BOT_TOKEN dans .env (voir CONNEXIONS.md).",
       c.telegram.pret ? el("button", { class: "btn small", onclick: async (e) => {
-        e.currentTarget.disabled = true;
+        const button = e.currentTarget;
+        button.disabled = true;
         try { await api("/api/telegram/briefing", {}); toast("Briefing envoyé sur Telegram"); } catch (err) { toast(err.message); }
-        e.currentTarget.disabled = false;
+        button.disabled = false;
       } }, "Envoyer le briefing maintenant") : null),
   );
 }

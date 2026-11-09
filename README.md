@@ -66,7 +66,7 @@ Jurgenita **automatise la préparation** de ce travail. **La décision et l'envo
 | Intégrations | **OAuth 2.0** Google (Gmail, Calendar, Business Profile), **Meta Graph API** (Instagram, Facebook, Messenger, Marketing API), **TikTok Display API**, **LinkedIn Community Management API**, **Telegram Bot API** |
 | Interface | HTML, CSS et JavaScript sans framework. **Web Speech API** (reconnaissance et synthèse vocale en français), Canvas (orbe animé, extraction d'images vidéo), Web Audio |
 | Automatisation | Publication programmée (vérification chaque minute), briefing quotidien sur Telegram, notifications de validation client |
-| Qualité | 43 tests **`node:test`** (API de bout en bout, sécurité, connecteurs et publication avec réponses simulées), intégration continue **GitHub Actions** sur Node 20 et 22 |
+| Qualité | 56 tests **`node:test`** (API de bout en bout, sécurité, robustesse, connecteurs et publication avec réponses simulées), intégration continue **GitHub Actions** sur Node 20 et 22 |
 
 ## Architecture
 
@@ -117,6 +117,9 @@ flowchart LR
 - **Connexion Google protégée contre la falsification de requête (CSRF)** : un paramètre `state` aléatoire est vérifié au retour de Google.
 - **Telegram verrouillé** : le bot ne répond qu'au chat de son propriétaire.
 - **Interface protégée contre l'injection de code (XSS)** : le contenu externe (mails, commentaires) est inséré comme texte, jamais comme HTML.
+- **Journaux sans secrets** (`src/redact.js`) : tout ce que le serveur écrit est filtré (jetons Meta, Google, Telegram, Anthropic, paramètres d'URL sensibles, valeurs exactes des accès configurés). Une erreur inattendue ne renvoie au navigateur qu'un message générique avec une référence, le détail restant dans le journal.
+- **Requêtes bornées** : JSON mal formé refusé (400), 1 Mo maximum par requête (20 Mo pour l'analyse d'images).
+- **Connexions Google** : paramètre `state` aléatoire de 256 bits, à usage unique, valable 10 minutes, 50 connexions en attente au maximum.
 - **Robustesse** : une source en panne retombe sur les données de démo au lieu de bloquer le briefing. Les sorties de l'IA sont validées par schéma, avec une valeur de repli quand Claude répond hors d'une liste attendue.
 
 ## Installation
@@ -133,7 +136,7 @@ npm start          # http://127.0.0.1:3000, à ouvrir dans Chrome ou Edge pour l
 Pour passer en mode réel, copiez `.env.example` en `.env`, puis suivez le guide **[CONNEXIONS.md](CONNEXIONS.md)** : clé API Claude, Gmail, Instagram et Facebook, Telegram.
 
 ```bash
-npm test           # 43 tests : API en mode démo, sécurité, connecteurs et publication avec réponses simulées
+npm test           # 56 tests : API en mode démo, sécurité, robustesse, connecteurs et publication avec réponses simulées
 npm run check      # vérification de la syntaxe
 ```
 

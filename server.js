@@ -3,10 +3,22 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomUUID } from "node:crypto";
+import { randomUUID, randomBytes } from "node:crypto";
+import Anthropic from "@anthropic-ai/sdk";
+import * as redaction from "./src/redact.js";
+import { createStateStore } from "./src/oauth-states.js";
+
+// Les journaux masquent les secrets dès le démarrage, quel que soit le module qui écrit.
+redaction.installConsoleRedaction();
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 if (fs.existsSync(path.join(here, ".env"))) process.loadEnvFile(path.join(here, ".env"));
+
+const SECRET_ENV = [
+  "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "GOOGLE_CLIENT_SECRET", "META_ACCESS_TOKEN",
+  "TIKTOK_ACCESS_TOKEN", "LINKEDIN_ACCESS_TOKEN", "TELEGRAM_BOT_TOKEN",
+];
+redaction.addSecretSource(() => SECRET_ENV.map((name) => process.env[name]));
 
 const store = await import("./src/store.js");
 const brands = await import("./src/brands.js");
@@ -18,6 +30,10 @@ const meta = await import("./src/connectors/meta.js");
 const telegram = await import("./src/connectors/telegram.js");
 const LIVE = !process.env.JURGENITA_DEMO && Boolean(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN);
 const brain = LIVE ? await import("./src/claude.js") : await import("./src/demo.js");
+redaction.addSecretSource(() => brands.list().flatMap((b) => {
+  const c = brands.config(b.id);
+  return [c.meta.token, c.tiktok.token, c.linkedin.token];
+}));
 
 const PORT = Number(process.env.PORT || 3000);
 // Pas d'authentification : on n'écoute que sur la machine locale par défaut.
@@ -45,14 +61,62 @@ function fail(status, message) {
   return Object.assign(new Error(message), { status });
 }
 
-async function readBody(req) {
-  let raw = "";
-  for await (const chunk of req) {
-    raw += chunk;
-    // Les images envoyées pour analyse peuvent peser quelques Mo.
-    if (raw.length > 20_000_000) throw fail(413, "Requête trop volumineuse");
+// Taille maximale du corps d'une requête : 1 Mo, sauf pour l'analyse d'images.
+const BODY_LIMIT = 1_000_000;
+const BODY_LIMITS = { "/api/vision": 20_000_000 };
+
+// Un corps trop gros est lu jusqu'au bout sans être gardé en mémoire : couper la
+// connexion en plein envoi ferait voir au navigateur une erreur réseau au lieu
+// du message 413 (le délai maximal de Node, requestTimeout, borne la lecture).
+function receive(req, limit) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    let tooBig = Number(req.headers["content-length"]) > limit;
+    req.on("data", (chunk) => {
+      if (tooBig) return;
+      size += chunk.length;
+      if (size > limit) {
+        tooBig = true;
+        chunks.length = 0;
+      } else chunks.push(chunk);
+    });
+    req.on("end", () => (tooBig ? reject(fail(413, "Requête trop volumineuse")) : resolve(Buffer.concat(chunks))));
+    req.on("error", reject);
+  });
+}
+
+async function readBody(req, limit = BODY_LIMIT) {
+  const raw = await receive(req, limit);
+  if (!raw.length) return {};
+  let body;
+  try {
+    body = JSON.parse(raw.toString("utf8"));
+  } catch {
+    throw fail(400, "Corps JSON invalide");
   }
-  return raw ? JSON.parse(raw) : {};
+  if (body === null || typeof body !== "object" || Array.isArray(body)) throw fail(400, "Le corps de la requête doit être un objet JSON");
+  return body;
+}
+
+// Ce que voit le navigateur quand une erreur survient. Les erreurs prévues
+// (statut < 500, refus, services externes) gardent leur message, masqué ;
+// les erreurs inattendues donnent un message générique et une référence,
+// le détail n'allant que dans le journal.
+function publicError(err) {
+  if (err.status && err.status < 500) return { status: err.status, erreur: redaction.redact(err.message) };
+  if (err instanceof Anthropic.APIError) {
+    const why = { 401: "clé API refusée", 403: "accès refusé", 429: "trop de demandes, réessayez dans un instant" }[err.status] || "service momentanément indisponible";
+    return { status: 502, erreur: `Claude : ${why}`, log: true };
+  }
+  if (err.constructor?.name === "RefusalError") return { status: 422, erreur: err.message };
+  // Erreur levée volontairement par Jurgenita ou par un connecteur (Error simple, sans code système).
+  if (err.constructor === Error && !err.code) {
+    const external = /^(Meta|Google|TikTok|LinkedIn|Telegram)\b/.test(err.message);
+    return { status: external ? 502 : 500, erreur: redaction.redact(err.message), log: true };
+  }
+  const ref = randomBytes(4).toString("hex");
+  return { status: 500, erreur: `Erreur interne (réf. ${ref}). Le détail est dans le journal du serveur.`, log: true, ref };
 }
 
 const notify = async (text) => {
@@ -211,22 +275,21 @@ async function handleValidation(req, res, url) {
 }
 
 // Connexion Google (OAuth) : /auth/google redirige vers Google, qui revient sur le callback.
-const oauthStates = new Set();
+const oauthStates = createStateStore();
 async function handleAuth(req, res, url) {
   if (url.pathname === "/auth/google") {
     if (!google.configured()) {
       res.writeHead(400, { "content-type": "text/plain; charset=utf-8" }).end("Ajoutez GOOGLE_CLIENT_ID et GOOGLE_CLIENT_SECRET dans .env (voir CONNEXIONS.md).");
       return;
     }
-    const state = randomUUID();
-    oauthStates.add(state);
+    const state = oauthStates.create();
     res.writeHead(302, { location: google.authUrl(GOOGLE_REDIRECT, state) }).end();
     return;
   }
   const state = url.searchParams.get("state");
   const code = url.searchParams.get("code");
   let message = "Votre compte Google est connecté. Vous pouvez fermer cet onglet.";
-  if (!oauthStates.delete(state)) message = "Lien de connexion expiré. Recommencez depuis Jurgenita.";
+  if (!oauthStates.consume(state)) message = "Lien de connexion expiré. Recommencez depuis Jurgenita.";
   else if (!code) message = `Connexion annulée (${url.searchParams.get("error") || "aucun code"}).`;
   else {
     try { await google.handleCallback(code, GOOGLE_REDIRECT); }
@@ -278,10 +341,12 @@ const server = http.createServer(async (req, res) => {
     }
     const handler = routes[`${req.method} ${url.pathname}`];
     if (!handler) return send(res, 404, { erreur: "Route inconnue" });
-    send(res, 200, await handler(req.method === "GET" ? {} : await readBody(req), brand));
+    const body = req.method === "GET" ? {} : await readBody(req, BODY_LIMITS[url.pathname]);
+    send(res, 200, await handler(body, brand));
   } catch (err) {
-    if (!err.status || err.status >= 500) console.error(`[${req.method} ${url.pathname}]`, err);
-    if (!res.headersSent) send(res, err.status || 500, { erreur: err.message });
+    const pub = publicError(err);
+    if (pub.log) console.error(`[${req.method} ${url.pathname}]${pub.ref ? ` réf. ${pub.ref}` : ""}`, err);
+    if (!res.headersSent) send(res, pub.status, { erreur: pub.erreur });
   }
 });
 
