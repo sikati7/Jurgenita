@@ -12,6 +12,7 @@ const store = await import("./src/store.js");
 const brands = await import("./src/brands.js");
 const sources = await import("./src/sources.js");
 const publisher = await import("./src/publisher.js");
+const security = await import("./src/security.js");
 const google = await import("./src/connectors/google.js");
 const meta = await import("./src/connectors/meta.js");
 const telegram = await import("./src/connectors/telegram.js");
@@ -249,7 +250,14 @@ function brandOf(req, url) {
   return brands.get(String(id)).id;
 }
 
+// Noms de site acceptés, fixés au démarrage d'après le port réel.
+let allowedHosts = new Set();
+
 const server = http.createServer(async (req, res) => {
+  for (const [name, value] of Object.entries(security.SECURITY_HEADERS)) res.setHeader(name, value);
+  const refused = security.check(req, allowedHosts);
+  if (refused) return send(res, refused.status, { erreur: refused.erreur });
+
   const url = new URL(req.url, "http://x");
   try {
     if (url.pathname.startsWith("/auth/google")) return await handleAuth(req, res, url);
@@ -278,12 +286,17 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
+  allowedHosts = security.allowedHosts(server.address().port);
   const c = sources.connections(brands.defaultId());
   console.log(`\n  ◉ JURGENITA en ligne — http://${HOST}:${server.address().port}`);
   console.log(LIVE ? `    Cerveau : ${brain.MODEL}` : "    Cerveau : mode démo (ajoutez ANTHROPIC_API_KEY dans .env)");
   console.log(`    Marques : ${brands.list().map((b) => b.nom).join(", ")}`);
   console.log(`    Gmail : ${c.gmail.connecte ? "connecté" : c.gmail.configure ? "à connecter depuis le Profil" : "non configuré"}`);
   console.log(`    Telegram : ${telegram.ready() ? "prêt" : telegram.configured() ? "envoyez un message au bot pour obtenir TELEGRAM_CHAT_ID" : "non configuré"}\n`);
+  if (!security.isLoopback(HOST)) {
+    console.warn("  ⚠ Jurgenita est ouverte au réseau (HOST) alors qu'elle n'a pas encore de connexion par mot de passe.");
+    console.warn("    Toute personne qui atteint cette adresse peut lire vos données et agir. Ajoutez son nom à JURGENITA_ALLOWED_HOSTS seulement sur un réseau de confiance.\n");
+  }
 });
 
 // Publication programmée : vérifie chaque minute les contenus approuvés.

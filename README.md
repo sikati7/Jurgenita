@@ -66,7 +66,7 @@ Jurgenita **automatise la préparation** de ce travail. **La décision et l'envo
 | Intégrations | **OAuth 2.0** Google (Gmail, Calendar, Business Profile), **Meta Graph API** (Instagram, Facebook, Messenger, Marketing API), **TikTok Display API**, **LinkedIn Community Management API**, **Telegram Bot API** |
 | Interface | HTML, CSS et JavaScript sans framework. **Web Speech API** (reconnaissance et synthèse vocale en français), Canvas (orbe animé, extraction d'images vidéo), Web Audio |
 | Automatisation | Publication programmée (vérification chaque minute), briefing quotidien sur Telegram, notifications de validation client |
-| Qualité | 34 tests **`node:test`** (API de bout en bout, connecteurs et publication avec réponses simulées), intégration continue **GitHub Actions** sur Node 20 et 22 |
+| Qualité | 43 tests **`node:test`** (API de bout en bout, sécurité, connecteurs et publication avec réponses simulées), intégration continue **GitHub Actions** sur Node 20 et 22 |
 
 ## Architecture
 
@@ -113,7 +113,8 @@ flowchart LR
 - **Accès séparés par marque** : les jetons de chaque client sont gardés dans `data/secrets/brands/` (permissions `600`) et ne sont jamais renvoyés à l'interface.
 - **Accès local uniquement** : le serveur écoute sur `127.0.0.1`, car il n'a pas d'authentification.
 - **Secrets hors du code** : les clés sont dans `.env`, le jeton Google dans `data/secrets/` (permissions `600`), et les deux sont exclus de Git.
-- **OAuth protégé contre la falsification de requête (CSRF)** : un paramètre `state` aléatoire est vérifié au retour de Google.
+- **Protection contre les requêtes venues d'autres sites** (`src/security.js`) : seuls les noms de site autorisés sont servis (contre le DNS rebinding), les actions doivent venir de Jurgenita elle-même et être envoyées en JSON (contre le CSRF), et Jurgenita refuse de s'afficher dans le cadre d'un autre site (contre le clickjacking). Vérifié par des tests qui rejouent chaque attaque sur chaque action sensible.
+- **Connexion Google protégée contre la falsification de requête (CSRF)** : un paramètre `state` aléatoire est vérifié au retour de Google.
 - **Telegram verrouillé** : le bot ne répond qu'au chat de son propriétaire.
 - **Interface protégée contre l'injection de code (XSS)** : le contenu externe (mails, commentaires) est inséré comme texte, jamais comme HTML.
 - **Robustesse** : une source en panne retombe sur les données de démo au lieu de bloquer le briefing. Les sorties de l'IA sont validées par schéma, avec une valeur de repli quand Claude répond hors d'une liste attendue.
@@ -132,7 +133,7 @@ npm start          # http://127.0.0.1:3000, à ouvrir dans Chrome ou Edge pour l
 Pour passer en mode réel, copiez `.env.example` en `.env`, puis suivez le guide **[CONNEXIONS.md](CONNEXIONS.md)** : clé API Claude, Gmail, Instagram et Facebook, Telegram.
 
 ```bash
-npm test           # 34 tests : API en mode démo, connecteurs et publication avec réponses simulées
+npm test           # 43 tests : API en mode démo, sécurité, connecteurs et publication avec réponses simulées
 npm run check      # vérification de la syntaxe
 ```
 
