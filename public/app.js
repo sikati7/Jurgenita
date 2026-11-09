@@ -802,7 +802,7 @@ function renderConnections() {
   const line = (name, ok, detail, action) =>
     el("li", {}, el("div", { class: "row" }, el("b", {}, name), el("span", { class: `tag ${ok ? "positif" : "a_ignorer"}` }, ok ? "Connecté" : "Non connecté")),
       el("div", { class: "subj", style: "white-space:normal" }, detail), action ? el("div", { style: "margin-top:8px" }, action) : null);
-  $("#connexions").replaceChildren(
+  fill($("#connexions"),
     line("Cerveau (API Claude)", state.mode === "live", state.mode === "live" ? `Modèle ${state.modele}` : "Mode démo : ajoutez ANTHROPIC_API_KEY dans .env puis relancez."),
     line("Gmail + Google Agenda", c.gmail.connecte,
       c.gmail.connecte ? "Jurgenita lit vos mails des 3 derniers jours et votre agenda, et crée les brouillons dans Gmail." : c.gmail.configure ? "Identifiants Google présents : il reste à autoriser l'accès." : "Ajoutez GOOGLE_CLIENT_ID et GOOGLE_CLIENT_SECRET dans .env (voir CONNEXIONS.md).",
@@ -812,6 +812,8 @@ function renderConnections() {
     line("Avis Google", c.marque.google_business && c.gmail.avis_autorises,
       !c.marque.google_business ? "Renseignez l'établissement Google de la marque ci-dessous." : c.gmail.avis_autorises ? "Avis lus et réponses publiées depuis l'onglet Communauté." : "Reconnectez votre compte Google pour autoriser les avis.",
       c.marque.google_business && c.gmail.configure && !c.gmail.avis_autorises ? el("a", { class: "btn small primary", href: "/auth/google" }, "Reconnecter Google") : null),
+    c.marque.acces_illisibles ? line(`⚠ Accès illisibles (${currentBrandName()})`, false,
+      "Le fichier des accès de cette marque est abîmé ou inaccessible. Par sécurité, Jurgenita ne l'écrasera pas : restaurez-le, ou retirez-le vous-même avant de ressaisir les accès.") : null,
     line(`Instagram + Facebook (${currentBrandName()})`, c.marque.meta, c.marque.meta ? "Commentaires, messages privés, statistiques et publication programmée." : "Renseignez les accès Meta de la marque ci-dessous (voir CONNEXIONS.md)."),
     line(`Meta Ads (${currentBrandName()})`, c.marque.meta_ads, c.marque.meta_ads ? "Performances des annonces en direct dans l'onglet Publicité." : "Ajoutez l'identifiant du compte publicitaire ci-dessous."),
     line(`TikTok · LinkedIn (${currentBrandName()})`, c.marque.tiktok || c.marque.linkedin, [c.marque.tiktok ? "TikTok connecté" : "TikTok non connecté", c.marque.linkedin ? "LinkedIn connecté" : "LinkedIn non connecté"].join(" · ") + " (statistiques)."),

@@ -358,6 +358,13 @@ server.listen(PORT, HOST, () => {
   console.log(`    Marques : ${brands.list().map((b) => b.nom).join(", ")}`);
   console.log(`    Gmail : ${c.gmail.connecte ? "connecté" : c.gmail.configure ? "à connecter depuis le Profil" : "non configuré"}`);
   console.log(`    Telegram : ${telegram.ready() ? "prêt" : telegram.configured() ? "envoyez un message au bot pour obtenir TELEGRAM_CHAT_ID" : "non configuré"}\n`);
+  const health = brands.secretsHealth();
+  if (health.illisibles.length) {
+    console.warn(`  ⚠ Accès illisibles pour : ${health.illisibles.join(", ")}. Ils ne seront pas écrasés (voir Profil → Connexions).\n`);
+  }
+  if (health.fichiers_temporaires) {
+    console.warn(`  ⚠ ${health.fichiers_temporaires} fichier(s) temporaire(s) d'une écriture interrompue dans data/secrets/brands/ : ignorés, vos accès ne sont pas touchés.\n`);
+  }
   if (!security.isLoopback(HOST)) {
     console.warn("  ⚠ Jurgenita est ouverte au réseau (HOST) alors qu'elle n'a pas encore de connexion par mot de passe.");
     console.warn("    Toute personne qui atteint cette adresse peut lire vos données et agir. Ajoutez son nom à JURGENITA_ALLOWED_HOSTS seulement sur un réseau de confiance.\n");

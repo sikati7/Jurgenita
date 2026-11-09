@@ -6,6 +6,7 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import * as store from "./store.js";
+import { readJsonFile, writeJsonAtomic, leftoverTemps } from "./atomic-file.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SECRETS_DIR = path.join(process.env.JURGENITA_SECRETS_DIR || path.join(here, "..", "data", "secrets"), "brands");
@@ -56,13 +57,58 @@ export function remove(id) {
 
 const secretFile = (id) => path.join(SECRETS_DIR, `${store.checkBrandId(id)}.json`);
 
+// Accès enregistrés d'une marque qui existent mais ne peuvent pas être lus
+// (fichier abîmé, tronqué, inaccessible). Ils ne sont jamais écrasés.
+export class UnreadableSecretsError extends Error {
+  constructor(id) {
+    super(`Les accès enregistrés de la marque « ${id} » sont illisibles. Ils ne seront pas écrasés : restaurez le fichier data/secrets/brands/${id}.json ou retirez-le vous-même avant de les ressaisir.`);
+    this.name = "UnreadableSecretsError";
+    this.status = 409;
+  }
+}
+
+// Marques dont le fichier illisible a déjà été signalé : un seul message par
+// incident, noté AVANT d'écrire, car le masquage des journaux relit lui-même
+// les accès des marques (sinon : boucle infinie).
+const reported = new Set();
+
+// { etat: "absent" | "ok" | "illisible", valeurs }
+function secretsState(id) {
+  const result = readJsonFile(secretFile(id));
+  if (result.etat === "illisible") {
+    if (!reported.has(id)) {
+      reported.add(id);
+      console.error(`[accès] ${result.erreur.message} (marque ${id}) :`, result.erreur.cause?.message);
+    }
+    return { etat: "illisible", valeurs: {} };
+  }
+  reported.delete(id);
+  return { etat: result.etat, valeurs: result.etat === "ok" ? result.valeur : {} };
+}
+
+// Lecture pour usage : un fichier illisible donne des accès vides (la marque
+// fonctionne alors sans ses connexions, comme avant), mais il est signalé.
 function readSecrets(id) {
-  try { return JSON.parse(fs.readFileSync(secretFile(id), "utf8")); } catch { return {}; }
+  return secretsState(id).valeurs;
+}
+
+// Lecture avant modification : refuse si le fichier existe mais est illisible.
+function readSecretsForUpdate(id) {
+  const state = secretsState(id);
+  if (state.etat === "illisible") throw new UnreadableSecretsError(id);
+  return state.valeurs;
 }
 
 function writeSecrets(id, value) {
-  fs.mkdirSync(SECRETS_DIR, { recursive: true });
-  fs.writeFileSync(secretFile(id), JSON.stringify(value, null, 2), { mode: 0o600 });
+  writeJsonAtomic(secretFile(id), value, { mode: 0o600 });
+}
+
+// État de stockage des accès, pour l'interface et les diagnostics.
+export function secretsHealth() {
+  return {
+    illisibles: list().filter((b) => secretsState(b.id).etat === "illisible").map((b) => b.id),
+    fichiers_temporaires: leftoverTemps(SECRETS_DIR).length,
+  };
 }
 
 // Configuration complète des connexions d'une marque.
@@ -91,7 +137,7 @@ export const CONFIG_FIELDS = [
 
 export function saveConfig(id, values) {
   get(id);
-  const current = readSecrets(id);
+  const current = readSecretsForUpdate(id);
   for (const field of CONFIG_FIELDS) {
     if (typeof values[field] === "string" && values[field].trim()) current[field] = values[field].trim();
   }
@@ -104,20 +150,22 @@ export function saveConfig(id, values) {
 // État des connexions, sans jamais renvoyer un jeton.
 export function connectionStatus(id) {
   const c = config(id);
+  const state = secretsState(id);
   return {
+    acces_illisibles: state.etat === "illisible",
     meta: Boolean(c.meta.token && (c.meta.igUserId || c.meta.pageId)),
     meta_ads: Boolean(c.meta.token && c.meta.adAccountId),
     google_business: Boolean(c.googleBusinessLocation),
     tiktok: Boolean(c.tiktok.token),
     linkedin: Boolean(c.linkedin.token && c.linkedin.orgId),
-    champs_renseignes: CONFIG_FIELDS.filter((f) => readSecrets(id)[f]),
+    champs_renseignes: CONFIG_FIELDS.filter((f) => state.valeurs[f]),
   };
 }
 
 // Lien de validation donné au client : un jeton secret par marque.
 export function validationToken(id) {
   get(id);
-  const s = readSecrets(id);
+  const s = readSecretsForUpdate(id);
   if (!s.validation_token) {
     s.validation_token = randomBytes(18).toString("base64url");
     writeSecrets(id, s);

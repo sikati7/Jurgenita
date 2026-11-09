@@ -31,7 +31,21 @@ export function addSecretSource(fn) {
   sources.add(fn);
 }
 
+// Vrai pendant la collecte des secrets : si une source écrit elle-même dans le
+// journal, ce message est masqué par motifs seulement, sans relancer la collecte.
+let collecting = false;
+
 function knownSecrets() {
+  if (collecting) return [];
+  collecting = true;
+  try {
+    return collectSecrets();
+  } finally {
+    collecting = false;
+  }
+}
+
+function collectSecrets() {
   const values = new Set();
   for (const fn of sources) {
     try {
