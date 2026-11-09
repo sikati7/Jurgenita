@@ -1,13 +1,20 @@
 // Mode démo : réponses préparées à partir des données locales, pour essayer
 // Jurgenita sans clé API. Le mode réel (src/claude.js) remplace tout ceci.
 import * as store from "./store.js";
+import * as sources from "./sources.js";
 
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+// La marque de démonstration principale, pour laquelle les réponses sont écrites à la main.
+const RESTO = "resto-afrik";
 
-export async function briefing() {
+export async function briefing(brand) {
   await pause(900);
-  const p = store.read("profile");
-  const s = store.read("stats");
+  return brand === RESTO ? restoBriefing() : genericBriefing(brand);
+}
+
+function restoBriefing() {
+  const p = store.read("profile", RESTO);
+  const s = store.read("stats", RESTO);
   const insta = s.plateformes.Instagram;
   return {
     salutation: `Bonjour ${p.appellation}. Café chaud, cerveau en ligne : voici votre journée.`,
@@ -57,8 +64,8 @@ export async function briefing() {
 export async function emailReply({ id, intention }) {
   await pause(600);
   const email = store.read("inbox").find((m) => m.id === id);
-  if (!email) throw new Error(`Email ${id} introuvable`);
-  const base = (await briefing()).emails.find((e) => e.id === id);
+  if (!email) throw Object.assign(new Error(`Email ${id} introuvable`), { status: 404 });
+  const base = restoBriefing().emails.find((e) => e.id === id);
   const prenom = email.de.split(" ")[0];
   return {
     objet: `Re: ${email.objet}`,
@@ -67,10 +74,11 @@ export async function emailReply({ id, intention }) {
   };
 }
 
-export async function contentStudio({ sujet, plateformes }) {
+export async function contentStudio({ sujet, plateformes }, brand) {
   await pause(800);
   const list = plateformes?.length ? plateformes : ["Instagram", "TikTok"];
-  const s = store.read("stats");
+  if (brand !== RESTO) return genericStudio(sujet, list, brand);
+  const s = store.read("stats", RESTO);
   return {
     concept: `« ${sujet} » raconté comme un secret de famille : on montre le geste, on raconte l'histoire, on finit sur la dégustation.`,
     posts: list.map((plateforme) => ({
@@ -99,10 +107,11 @@ export async function contentStudio({ sujet, plateformes }) {
   };
 }
 
-export async function communityTriage() {
+export async function communityTriage(brand) {
   await pause(700);
-  const b = await briefing();
-  const items = store.read("community");
+  if (brand !== RESTO) return genericTriage(brand);
+  const b = restoBriefing();
+  const items = store.read("community", RESTO);
   const meta = {
     c1: ["positif", "moyenne", "compliment + question livraison", "aucune", "Fidélisation et vente en livraison."],
     c2: ["negatif", "moyenne", "troll / critique prix", "aucune", "Répondre avec humour transforme la critique en visibilité."],
@@ -148,49 +157,237 @@ export async function visionReport({ images, video }) {
 }
 
 // Petite base de connaissances pour répondre aux questions d'expertise en démo.
-const KNOWLEDGE = [
+const knowledge = (brand) => [
   { mots: ["heure", "moment", "quand publier", "horaire"], texte: () => {
-    const h = store.read("stats").heures_fortes;
-    return `D'après vos statistiques, Boss : Instagram ${h.Instagram}, TikTok ${h.TikTok}, Facebook ${h.Facebook}, LinkedIn ${h.LinkedIn}. Publiez 30 minutes avant le pic pour laisser l'algorithme tester la vidéo, et restez disponible 20 minutes après pour répondre aux premiers commentaires : c'est là que se joue la portée.`;
+    const h = store.read("stats", brand).heures_fortes;
+    const list = Object.entries(h).map(([k, v]) => `${k} ${v}`).join(", ") || "pas encore de données pour cette marque";
+    return `D'après vos statistiques, Boss : ${list}. Publiez 30 minutes avant le pic pour laisser l'algorithme tester la vidéo, et restez disponible 20 minutes après pour répondre aux premiers commentaires : c'est là que se joue la portée.`;
   } },
   { mots: ["engagement", "taux"], texte: () => {
-    const p = store.read("stats").plateformes;
-    return `Le taux d'engagement, c'est (likes + commentaires + partages + enregistrements) divisé par la portée ou le nombre d'abonnés. Vous êtes à ${p.Instagram.taux_engagement} % sur Instagram et ${p.TikTok.taux_engagement} % sur TikTok : au-dessus de la moyenne food, qui tourne autour de 2 à 4 % sur Instagram. Pour progresser : des questions ouvertes en fin de légende, et des formats qui donnent envie d'enregistrer, comme les recettes.`;
+    const p = store.read("stats", brand).plateformes;
+    const rates = Object.entries(p).filter(([, v]) => v.taux_engagement != null).map(([k, v]) => `${v.taux_engagement} % sur ${k}`).join(", ") || "aucun taux mesuré pour l'instant";
+    return `Le taux d'engagement, c'est (likes + commentaires + partages + enregistrements) divisé par la portée ou le nombre d'abonnés. Vous êtes à ${rates}. La moyenne tourne autour de 2 à 4 % sur Instagram. Pour progresser : des questions ouvertes en fin de légende, et des formats qui donnent envie d'enregistrer, comme les recettes.`;
   } },
   { mots: ["bad buzz", "crise", "avis négatif", "critique", "négatif"], texte: () => "Ma méthode en 4 temps : 1. Répondre vite, en moins de 24 h, publiquement et brièvement. 2. Reconnaître sans se justifier ni contre-attaquer. 3. Passer en privé pour régler le cas concret. 4. Montrer publiquement ce qui a changé, par exemple en coulisses. Ne supprimez jamais une critique légitime : seuls les spams et les insultes se masquent." },
   { mots: ["hashtag"], texte: () => "En 2026, les hashtags servent surtout à catégoriser votre contenu, pas à le pousser. Comptez 3 à 5 hashtags précis (#cuisineafricaine, #foodparis, #restoafrik) plutôt que 30 génériques. Sur TikTok et Instagram, les mots-clés dans la légende et le texte à l'écran comptent désormais davantage pour la recherche." },
   { mots: ["algorithme", "algo", "portée"], texte: () => "Les algorithmes récompensent la rétention : la part des gens qui regardent jusqu'au bout et qui revoient. Une accroche forte dans les 2 premières secondes, un rythme serré, et une fin qui reboucle sur le début. Les partages en message privé et les enregistrements pèsent plus que les likes." },
   { mots: ["calendrier", "planning", "planifier"], texte: () => {
-    const cal = store.read("calendar");
-    return `Votre calendrier compte ${cal.length} contenus planifiés. Je vous conseille un rythme 3-2-1 par semaine : 3 vidéos courtes, 2 carrousels ou photos, 1 format long ou un live. Gardez « Les secrets de Maman » le même jour à la même heure pour créer un rendez-vous.`;
+    const cal = sources.calendar(brand);
+    return `Votre calendrier compte ${cal.length} contenus planifiés. Je vous conseille un rythme 3-2-1 par semaine : 3 vidéos courtes, 2 carrousels ou photos, 1 format long ou un live. Gardez votre format phare le même jour à la même heure pour créer un rendez-vous.`;
   } },
   { mots: ["prix", "tarif", "combien facturer", "négocier", "partenariat"], texte: () => {
-    const r = store.read("profile").regles.join(" ; ");
-    return `Vos règles : ${r}. Repère courant pour un micro-influenceur food : 100 à 200 € par tranche de 10 000 abonnés pour un post, davantage pour la vidéo et l'usage publicitaire. Ne baissez jamais votre prix : ajoutez ou retirez des livrables à la place.`;
+    const r = store.read("profile", brand).regles.join(" ; ") || "aucune règle enregistrée";
+    return `Vos règles : ${r}. Repère courant pour un micro-influenceur : 100 à 200 € par tranche de 10 000 abonnés pour un post, davantage pour la vidéo et l'usage publicitaire. Ne baissez jamais votre prix : ajoutez ou retirez des livrables à la place.`;
   } },
   { mots: ["mail", "email", "courrier", "boîte"], texte: () => {
     const n = store.read("inbox").length;
     return `Vous avez ${n} emails. Les urgences : Marc Duval, client mécontent, et deux opportunités en or, Épices du Monde et Awa Diallo. Ouvrez l'onglet « Boîte mail » pour voir mes brouillons, ou dites « Briefing » pour le tour complet.`;
   } },
   { mots: ["stat", "chiffre", "performance", "abonné"], texte: () => {
-    const p = store.read("stats").plateformes;
-    return `Sur 7 jours : Instagram ${p.Instagram.abonnes.toLocaleString("fr-FR")} abonnés (+${p.Instagram.evolution_abonnes}), TikTok ${p.TikTok.abonnes.toLocaleString("fr-FR")} (+${p.TikTok.evolution_abonnes}). Votre meilleur contenu : ${p.TikTok.meilleur_post}. Au rythme actuel, l'objectif de 50 000 abonnés Instagram sera atteint dans environ 13 semaines : une collab comme celle d'Awa peut le rapprocher nettement.`;
+    const p = store.read("stats", brand).plateformes;
+    const lines = Object.entries(p).map(([k, v]) => `${k} ${Number(v.abonnes || 0).toLocaleString("fr-FR")} abonnés${v.evolution_abonnes ? ` (+${v.evolution_abonnes})` : ""}`);
+    const best = Object.values(p).find((v) => v.meilleur_post)?.meilleur_post;
+    return lines.length ? `Sur 7 jours : ${lines.join(", ")}.${best ? ` Votre meilleur contenu : ${best}.` : ""}` : "Pas encore de statistiques pour cette marque : connectez ses comptes dans Profil → Marque.";
   } },
-  { mots: ["idée", "inspiration", "contenu", "quoi poster"], texte: () => "Trois idées pour aujourd'hui : 1. Répondre en vidéo au troll qui trouve le resto « pour bobos », en montrant les prix. 2. Le koki, demandé par votre communauté. 3. Un sondage « Thieb ou ndolé ? » en teaser de la collab avec Awa. Le Studio peut transformer n'importe laquelle en pack complet." },
+  { mots: ["pub", "annonce", "campagne", "roas", "ads", "budget"], texte: () => {
+    const a = store.read("ads", brand).annonces;
+    if (!a.length) return "Aucune campagne pour cette marque. Le module Publicité peut vous en préparer une, prête à lancer.";
+    const best = [...a].sort((x, y) => (y.roas ?? 0) - (x.roas ?? 0))[0];
+    const worst = [...a].sort((x, y) => (x.roas ?? 0) - (y.roas ?? 0))[0];
+    return `Votre meilleure annonce est « ${best.annonce} » (ROAS ${best.roas ?? "n.c."}). La plus faible est « ${worst.annonce} » (ROAS ${worst.roas ?? "n.c."}, CTR ${worst.ctr} %) : je la couperais et je réinvestirais le budget sur la meilleure. Le module Publicité vous donne l'analyse complète.`;
+  } },
+  { mots: ["idée", "inspiration", "contenu", "quoi poster"], texte: () => {
+    if (brand !== RESTO) return `Trois pistes : ${store.read("veille", brand).tendances.join(" ; ") || "suivez les questions de votre communauté"}. Le Studio peut transformer n'importe laquelle en pack complet.`;
+    return "Trois idées pour aujourd'hui : 1. Répondre en vidéo au troll qui trouve le resto « pour bobos », en montrant les prix. 2. Le koki, demandé par votre communauté. 3. Un sondage « Thieb ou ndolé ? » en teaser de la collab avec Awa. Le Studio peut transformer n'importe laquelle en pack complet.";
+  } },
 ];
 
-export async function chat({ message }) {
+export async function chat({ message }, brand) {
   await pause(500);
   const m = message.toLowerCase();
-  const hit = KNOWLEDGE.find((k) => k.mots.some((w) => m.includes(w)));
+  const hit = knowledge(brand).find((k) => k.mots.some((w) => m.includes(w)));
   if (/bonjour|salut|hello|réveil|coucou/.test(m) && !hit) {
     return { texte: "Bonjour Boss. Je suis en ligne. Dites « Briefing » pour le tour du matin, ou posez-moi n'importe quelle question de contenu ou de communauté.", outils: [] };
   }
   if (hit) return { texte: hit.texte(), outils: ["mode démo"] };
   return {
-    texte: "En mode démo, je réponds aux sujets suivants : horaires de publication, engagement, bad buzz, hashtags, algorithmes, calendrier, tarifs de partenariat, mails, statistiques et idées. Ajoutez une clé API Anthropic pour que je réponde vraiment à tout, que je cherche les tendances sur le web, et que je retienne vos préférences.",
+    texte: "En mode démo, je réponds aux sujets suivants : horaires de publication, engagement, bad buzz, hashtags, algorithmes, calendrier, tarifs de partenariat, publicité, mails, statistiques et idées. Ajoutez une clé API Anthropic pour que je réponde vraiment à tout, que je cherche les tendances sur le web, et que je retienne vos préférences.",
     outils: ["mode démo"],
   };
 }
 
 export function resetConversation() {}
+
+// ---------- Réponses générées pour les autres marques ----------
+
+const SENTIMENT = (c) => {
+  const t = c.texte.toLowerCase();
+  if (/€\/mois|lien dans ma bio|crypto/.test(t)) return "spam";
+  if (/pas arrivée|déçu|taillent petit|lent|problème|toujours pas|nul/.test(t)) return "negatif";
+  if (/😍|👏|bravo|merci|top|meilleur|❤️|adore/.test(t)) return "positif";
+  return "neutre";
+};
+
+function genericReply(c, p) {
+  const prenom = c.auteur.replace(/^@/, "").split(/[ ._]/)[0];
+  const s = SENTIMENT(c);
+  if (s === "spam") return "";
+  if (c.type === "DM" && s === "negatif") return `Bonjour ${prenom}, toutes nos excuses pour ce retard. Je regarde votre commande tout de suite et je reviens vers vous aujourd'hui avec une solution. Merci de votre patience 🙏`;
+  if (c.type === "avis") return `Merci ${prenom} pour ce retour précieux. ${s === "negatif" ? "Vous avez raison, et nous ajoutons dès cette semaine un guide des tailles détaillé sur chaque fiche produit. N'hésitez pas à nous écrire si nous pouvons faire plus." : "Au plaisir de vous revoir très vite !"} — L'équipe ${p.marque}`;
+  if (/taille|existe en|dispo|disponible|\?/.test(c.texte)) return `Bonjour ${prenom} ! Je vous réponds en message privé avec toutes les infos 😊`;
+  if (/collaboration|b2b|partenariat/i.test(c.texte)) return `Merci ${prenom} ! Avec plaisir, écrivez-nous en message privé et nous organisons un échange.`;
+  return `Merci ${prenom}, ça nous touche énormément ✨`;
+}
+
+async function genericTriage(brand) {
+  const p = store.read("profile", brand);
+  const items = store.read("community", brand);
+  const elements = items.map((c) => {
+    const sentiment = SENTIMENT(c);
+    const priorite = c.type === "DM" || c.type === "avis" || sentiment === "negatif" ? "haute" : sentiment === "spam" ? "basse" : "moyenne";
+    return {
+      id: c.id,
+      sentiment,
+      priorite,
+      categorie: sentiment === "spam" ? "spam" : c.type === "avis" ? "avis" : c.type === "DM" ? "message privé" : /\?/.test(c.texte) ? "question" : "compliment",
+      reponse: genericReply(c, p),
+      moderation: sentiment === "spam" ? "masquer" : c.type === "commentaire" && /\?/.test(c.texte) ? "passer_en_prive" : "aucune",
+      raison: c.type === "DM" ? "Un client attend une solution personnelle." : c.type === "avis" ? "Les avis influencent directement les ventes." : sentiment === "positif" ? "Remercier fidélise." : "Répondre vite montre une marque à l'écoute.",
+    };
+  });
+  const negatifs = elements.filter((e) => e.sentiment === "negatif").length;
+  return {
+    synthese: `${items.length} interactions récentes, dont ${negatifs} négatives à traiter en priorité. Le reste est enthousiaste.`,
+    elements,
+    idees_issues_de_la_communaute: store.read("veille", brand).tendances.slice(0, 3),
+  };
+}
+
+function genericBriefing(brand) {
+  const p = store.read("profile", brand);
+  const s = store.read("stats", brand);
+  const items = store.read("community", brand);
+  const ads = store.read("ads", brand).annonces;
+  const pending = sources.calendar(brand).filter((x) => x.statut === "en validation");
+  const urgent = items.filter((c) => SENTIMENT(c) === "negatif");
+  const best = [...ads].sort((a, b) => (b.roas ?? 0) - (a.roas ?? 0))[0];
+  const worst = [...ads].sort((a, b) => (a.roas ?? 0) - (b.roas ?? 0))[0];
+  const growth = Object.entries(s.plateformes).map(([k, v]) => `${k} +${v.evolution_abonnes ?? 0}`).join(", ");
+  const priorites = [
+    ...urgent.slice(0, 2).map((c) => ({ titre: `Répondre à ${c.auteur} (${c.plateforme})`, pourquoi: c.texte.slice(0, 90), action: "Envoyer la réponse préparée dans l'onglet Communauté." })),
+    ...(pending.length ? [{ titre: `${pending.length} contenu(s) en attente de validation client`, pourquoi: "Sans validation, ils ne partiront pas à l'heure.", action: "Envoyer le lien de validation au client (Calendrier)." }] : []),
+    ...(worst && best && worst !== best ? [{ titre: `Couper l'annonce « ${worst.annonce} »`, pourquoi: `ROAS ${worst.roas ?? "n.c."} contre ${best.roas ?? "n.c."} pour « ${best.annonce} ».`, action: "Réaffecter son budget à la meilleure annonce." }] : []),
+  ];
+  const restoEmails = restoBriefing().emails;
+  return {
+    salutation: `Bonjour ${p.appellation}. Point du jour pour ${p.marque}.`,
+    a_dire: `Bonjour ${p.appellation}. Pour ${p.marque}, ${urgent.length} messages négatifs attendent une réponse, ${pending.length} contenus attendent la validation du client${best ? `, et votre meilleure annonce est ${best.annonce}, avec un retour de ${best.roas} fois la mise` : ""}. Côté abonnés : ${growth || "pas encore de données"}. Tout est prêt dans vos onglets.`,
+    priorites: priorites.length ? priorites : [{ titre: "Rien d'urgent", pourquoi: "Aucun message négatif ni contenu en attente.", action: "Préparer les contenus de la semaine au Studio." }],
+    emails: restoEmails,
+    communaute: {
+      humeur: `Abonnés sur 7 jours : ${growth || "non mesuré"}. ${urgent.length ? `${urgent.length} retour(s) négatif(s) à traiter.` : "Climat positif."}`,
+      alertes: urgent.map((c) => `${c.auteur} (${c.plateforme}) : ${c.texte.slice(0, 80)}`),
+      reponses: items.map((c) => ({ id: c.id, reponse: genericReply(c, p), moderation: SENTIMENT(c) === "spam" ? "masquer" : "aucune" })),
+    },
+    idees_contenu: store.read("veille", brand).tendances.slice(0, 3).map((t, i) => ({ plateforme: p.plateformes[i % p.plateformes.length] || "Instagram", format: "Vidéo courte", accroche: t.split(" ").slice(0, 8).join(" ") + "…", idee: t })),
+    conseil_du_jour: best ? `Doublez le budget de « ${best.annonce} » tant que le ROAS reste au-dessus de 3.` : "Publiez à la même heure chaque semaine pour créer un rendez-vous.",
+  };
+}
+
+function genericStudio(sujet, list, brand) {
+  const p = store.read("profile", brand);
+  const s = store.read("stats", brand);
+  const tag = `#${p.marque.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+  return {
+    concept: `« ${sujet} » raconté de l'intérieur : les coulisses, les mains qui fabriquent, puis le résultat porté ou utilisé.`,
+    posts: list.map((plateforme) => ({
+      plateforme,
+      format: plateforme === "LinkedIn" ? "Post texte + photo" : "Vidéo verticale 30-45 s",
+      accroche: plateforme === "LinkedIn" ? `Ce que « ${sujet} » dit de notre façon de travailler.` : `Vous n'avez jamais vu « ${sujet} » comme ça.`,
+      legende: plateforme === "LinkedIn"
+        ? `Chez ${p.marque}, chaque détail a une histoire. Aujourd'hui : ${sujet}. Voici pourquoi c'est important pour nous 👇`
+        : `${sujet} ✨ Dites-nous en commentaire ce que vous en pensez 👇`,
+      hashtags: [tag, ...(p.mots_cles_veille || []).slice(1, 3).map((k) => `#${k.replace(/\s+/g, "")}`)],
+      direction_visuelle: "Lumière naturelle, gros plans sur les matières et les gestes, un visage humain dans les 3 premières secondes.",
+      meilleur_moment: s.heures_fortes?.[plateforme] || "18h-21h",
+      appel_a_l_action: "Enregistre pour plus tard et partage à quelqu'un qui doit voir ça.",
+    })),
+    script_video: [
+      { temps: "0-3 s", plan: "Le résultat final, en mouvement", voix_off: "Voilà ce qu'on a fabriqué cette semaine.", texte_ecran: "AVANT / APRÈS 👀" },
+      { temps: "3-20 s", plan: "Les étapes clés, plans rapides", voix_off: "Et voilà comment on en arrive là.", texte_ecran: "Étape par étape" },
+      { temps: "20-35 s", plan: "La personne qui l'a fait, face caméra", voix_off: "Rencontrez la personne derrière.", texte_ecran: "Made with ❤️" },
+    ],
+    conseils: ["Mode démo : connectez une clé API pour un pack vraiment sur mesure.", "Montrez un visage humain dans les 3 premières secondes."],
+  };
+}
+
+// ---------- Publicité, veille et rapport ----------
+
+export async function adsGenerator({ produit, plateformes }, brand) {
+  await pause(800);
+  const p = store.read("profile", brand);
+  const list = plateformes?.length ? plateformes : ["Meta Ads"];
+  const variants = [
+    { variante: "A", angle: "Émotion et histoire", titre: "L'histoire derrière", texte: `${produit} : bien plus qu'un produit, une histoire. Découvrez ce qui rend ${p.marque} unique.` },
+    { variante: "B", angle: "Preuve sociale", titre: "Déjà adopté", texte: `Ils l'ont adopté, ils en parlent. ${produit} par ${p.marque}, noté 4,8/5 par nos clients.` },
+    { variante: "C", angle: "Urgence douce", titre: "Édition limitée", texte: `${produit} en quantité limitée cette semaine. Réservez le vôtre avant qu'il ne parte.` },
+  ];
+  return {
+    strategie: `Tester trois leviers (émotion, preuve sociale, urgence) sur une audience chaude, puis élargir avec des audiences similaires une fois le meilleur angle identifié.`,
+    audiences: [
+      { nom: "Audience chaude", ciblage: "Visiteurs du site et personnes ayant interagi avec la page sur 90 jours", pourquoi: "Taux de conversion le plus élevé, idéal pour tester les angles." },
+      { nom: "Similaires 1 %", ciblage: "Audience similaire aux acheteurs des 180 derniers jours", pourquoi: "Pour élargir sans perdre en pertinence." },
+      { nom: "Centres d'intérêt", ciblage: `${p.niche}, 25-45 ans, zone de chalandise`, pourquoi: "Pour toucher de nouveaux clients proches du cœur de cible." },
+    ],
+    annonces: list.flatMap((plateforme) => variants.map((v) => ({
+      plateforme,
+      variante: v.variante,
+      angle: v.angle,
+      titre: v.titre.slice(0, 30),
+      texte_principal: v.texte,
+      description: `${p.marque} — ${produit}`.slice(0, 90),
+      appel_a_l_action: plateforme === "Google Ads" ? "Découvrir" : "En savoir plus",
+      visuel: plateforme === "TikTok Ads" ? "Vidéo 9:16 face caméra, sous-titrée, produit visible dès la 1re seconde." : "Vidéo 4:5 ou carrousel, produit en situation, texte court à l'écran.",
+    }))),
+    test_ab: "Même budget par variante pendant 4 à 7 jours (au moins 50 conversions au total), puis gardez la variante au meilleur coût par résultat.",
+    repartition_budget: "70 % sur l'audience chaude pendant le test, 30 % sur les audiences similaires ; basculez 80 % sur le gagnant ensuite.",
+    kpi_a_suivre: ["CTR (> 1 %)", "Coût par clic", "Coût par conversion", "ROAS (objectif > 3)"],
+  };
+}
+
+export async function adsReview(brand) {
+  await pause(700);
+  const { annonces } = await sources.ads(brand);
+  const decide = (a) => (a.roas == null ? (a.ctr >= 2 ? "garder" : "retravailler") : a.roas >= 3 ? "augmenter" : a.roas >= 1.5 ? "garder" : a.ctr < 1 ? "couper" : "retravailler");
+  const spend = annonces.reduce((n, a) => n + a.depense, 0);
+  return {
+    synthese: annonces.length
+      ? `${spend.toFixed(0)} € dépensés sur ${annonces.length} annonces. Deux leviers : réinvestir le budget des annonces faibles sur les meilleures et renouveler les visuels qui fatiguent.`
+      : "Aucune annonce active pour cette marque.",
+    decisions: annonces.map((a) => ({
+      annonce: a.annonce,
+      decision: decide(a),
+      raison: `CTR ${a.ctr} %, CPC ${a.cpc} €, ${a.conversions} conversions, ROAS ${a.roas ?? "n.c."}.`,
+    })),
+    alertes: annonces.filter((a) => a.roas != null && a.roas < 1).map((a) => `« ${a.annonce} » perd de l'argent (ROAS ${a.roas}).`),
+    prochains_tests: ["Tester une accroche vidéo face caméra contre la meilleure annonce actuelle", "Tester une audience similaire 1 % aux acheteurs"],
+  };
+}
+
+export async function veille(brand) {
+  await pause(900);
+  return { ...store.read("veille", brand), alerte: "", opportunites: store.read("veille", brand).tendances.slice(0, 2) };
+}
+
+export async function reportInsights(data, brand) {
+  await pause(600);
+  const p = store.read("profile", brand);
+  const growth = Object.entries(data.statistiques.plateformes).map(([k, v]) => `${k} +${v.evolution_abonnes ?? 0}`);
+  return {
+    resume: `Sur la période, ${p.marque} a gagné des abonnés sur toutes ses plateformes (${growth.join(", ")}). La communauté est engagée et la publicité commence à être rentable sur les meilleures annonces.`,
+    reussites: [`Croissance : ${growth.join(", ")}`, data.statistiques.plateformes[Object.keys(data.statistiques.plateformes)[0]]?.meilleur_post ? `Meilleur contenu : ${Object.values(data.statistiques.plateformes)[0].meilleur_post}` : "Régularité de publication tenue"],
+    points_attention: ["Certains retours négatifs reviennent : à traiter à la source", "Une partie du budget publicitaire va sur des annonces peu rentables"],
+    recommandations: ["Doubler les formats coulisses et face caméra, qui performent le mieux", "Couper les annonces au ROAS inférieur à 1 et réinvestir sur les meilleures", "Répondre à tous les avis sous 24 h"],
+    objectifs_prochaine_periode: (p.objectifs || []).slice(0, 3),
+  };
+}

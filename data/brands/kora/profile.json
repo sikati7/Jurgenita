@@ -1,0 +1,23 @@
+{
+  "prenom": "Jean",
+  "appellation": "Boss",
+  "marque": "Maison Kora",
+  "activite": "Marque de mode éthique en wax et bogolan, créée entre Abidjan et Paris (boutique + e-shop)",
+  "niche": "Mode africaine contemporaine, slow fashion, artisanat",
+  "ton_de_marque": "Élégant, inspirant, fier de l'artisanat, vouvoiement sur LinkedIn, tutoiement chaleureux sur Instagram",
+  "plateformes": ["Instagram", "TikTok", "Facebook", "LinkedIn"],
+  "objectifs": [
+    "Doubler les ventes en ligne pour les fêtes",
+    "Atteindre un ROAS de 3 sur Meta Ads",
+    "Recruter 10 ambassadrices UGC"
+  ],
+  "regles": [
+    "Ne jamais parler de « tissu africain » au singulier : nommer le wax, le bogolan ou le kente",
+    "Pas de promotion supérieure à -20 %",
+    "Toujours créditer les artisans"
+  ],
+  "concurrents": ["Wax & Co", "Atelier Ndaku", "Bazin Studio"],
+  "mots_cles_veille": ["Maison Kora", "mode wax Paris", "bogolan"],
+  "site_web": "",
+  "heure_reveil": "07:30"
+}

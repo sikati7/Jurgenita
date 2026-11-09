@@ -1,0 +1,4 @@
+[
+  {"id": "kk1", "demo": true, "decalage_jours": 1, "heure": "20:30", "plateforme": "Instagram", "format": "Reel", "sujet": "Essayage de la veste Kente Lumière en 3 tailles", "legende": "Une veste, trois silhouettes ✨ Laquelle te ressemble ? Tailles du 34 au 48. #wax #modeafricaine #maisonkora", "image_url": "", "statut": "en validation"},
+  {"id": "kk2", "demo": true, "decalage_jours": 3, "heure": "08:30", "plateforme": "LinkedIn", "format": "Post", "sujet": "Rencontre avec Awa, tisserande à Abidjan", "legende": "", "image_url": "", "statut": "brouillon"}
+]

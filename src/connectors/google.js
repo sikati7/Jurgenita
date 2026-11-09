@@ -1,4 +1,5 @@
-// Connecteur Google : Gmail (lecture + brouillons) et Google Agenda (lecture).
+// Connecteur Google : Gmail (lecture + brouillons), Google Agenda (lecture) et
+// avis Google Business Profile (lecture + réponse).
 // OAuth « application de bureau » : le jeton est gardé dans data/secrets/.
 import fs from "node:fs";
 import path from "node:path";
@@ -10,6 +11,7 @@ const SCOPES = [
   "https://www.googleapis.com/auth/gmail.readonly",
   "https://www.googleapis.com/auth/gmail.compose",
   "https://www.googleapis.com/auth/calendar.readonly",
+  "https://www.googleapis.com/auth/business.manage",
 ];
 const GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me";
 
@@ -50,8 +52,15 @@ export async function handleCallback(code, redirectUri) {
   const data = await tokenRequest({ code, redirect_uri: redirectUri, grant_type: "authorization_code" });
   if (!data.refresh_token) throw new Error("Google n'a pas renvoyé de jeton de rafraîchissement. Réessayez.");
   fs.mkdirSync(path.dirname(TOKEN_FILE), { recursive: true });
-  fs.writeFileSync(TOKEN_FILE, JSON.stringify({ refresh_token: data.refresh_token }), { mode: 0o600 });
+  fs.writeFileSync(TOKEN_FILE, JSON.stringify({ refresh_token: data.refresh_token, scope: data.scope || "" }), { mode: 0o600 });
   cached = { access_token: data.access_token, expires_at: Date.now() + (data.expires_in - 60) * 1000 };
+}
+
+// Les comptes connectés avant l'ajout des avis Google doivent se reconnecter.
+export function hasBusinessScope() {
+  if (!connected()) return false;
+  const { scope = "" } = JSON.parse(fs.readFileSync(TOKEN_FILE, "utf8"));
+  return scope.includes("business.manage");
 }
 
 export function disconnect() {
@@ -141,4 +150,28 @@ export async function agenda() {
     titre: e.summary || "(sans titre)",
     lieu: e.location || "",
   }));
+}
+
+const STARS = { ONE: 1, TWO: 2, THREE: 3, FOUR: 4, FIVE: 5 };
+
+// Avis d'un établissement. `location` : « accounts/123/locations/456 ».
+export async function reviews(location) {
+  const data = await gfetch(`https://mybusiness.googleapis.com/v4/${location}/reviews?pageSize=20`);
+  return (data.reviews || []).map((r) => ({
+    id: `gr_${r.reviewId}`,
+    ref: r.name,
+    reseau: "google",
+    plateforme: "Google",
+    type: "avis",
+    auteur: r.reviewer?.displayName || "Client Google",
+    post: `Avis Google — ${STARS[r.starRating] ?? "?"}/5`,
+    note: STARS[r.starRating] ?? null,
+    texte: r.comment || "(avis sans commentaire)",
+    date: r.updateTime || r.createTime,
+    deja_repondu: Boolean(r.reviewReply),
+  }));
+}
+
+export async function replyReview(name, comment) {
+  return gfetch(`https://mybusiness.googleapis.com/v4/${name}/reply`, { method: "PUT", body: JSON.stringify({ comment }) });
 }

@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Validation des contenus</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <style>
+    :root { --bg: #f6f4ef; --card: #fff; --text: #1d1d1f; --muted: #6b6b70; --line: #e4e0d8; --accent: #c2410c; --green: #15803d; --gold: #b45309; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    main { max-width: 760px; margin: 0 auto; padding: 32px 16px 60px; }
+    h1 { font-size: 26px; margin: 0 0 4px; }
+    .muted { color: var(--muted); }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px; margin-top: 16px; }
+    .row { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: baseline; }
+    .badge { font-size: 12px; padding: 3px 10px; border-radius: 99px; border: 1px solid var(--line); white-space: nowrap; }
+    .badge.attente { color: var(--gold); border-color: #f5d0a0; background: #fff8ec; }
+    .badge.ok { color: var(--green); border-color: #bbe5c8; background: #f0fbf3; }
+    .legende { white-space: pre-wrap; background: #faf9f6; border-radius: 10px; padding: 12px; margin: 12px 0; }
+    img { max-width: 100%; border-radius: 10px; margin-top: 8px; }
+    textarea { width: 100%; min-height: 70px; border: 1px solid var(--line); border-radius: 10px; padding: 10px; font: inherit; }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+    button { font: inherit; border-radius: 10px; padding: 10px 16px; cursor: pointer; border: 1px solid var(--line); background: #fff; }
+    button.approve { background: var(--green); color: #fff; border-color: var(--green); }
+    button:disabled { opacity: .5; cursor: wait; }
+    .footer { text-align: center; margin-top: 32px; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1 id="title">Validation des contenus</h1>
+    <p class="muted">Relisez les publications prévues et validez-les, ou demandez des modifications. Rien n'est publié sans votre accord.</p>
+    <div id="list"><p class="muted">Chargement…</p></div>
+    <p class="footer muted">Espace de validation préparé avec Jurgenita</p>
+  </main>
+  <script>
+    "use strict";
+    const token = location.pathname.split("/")[2] || "";
+    const list = document.getElementById("list");
+
+    function el(tag, attrs = {}, ...children) {
+      const node = document.createElement(tag);
+      for (const [k, v] of Object.entries(attrs)) {
+        if (v == null || v === false) continue;
+        if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+        else node.setAttribute(k, v);
+      }
+      for (const c of children.flat()) if (c != null && c !== false) node.append(c instanceof Node ? c : document.createTextNode(String(c)));
+      return node;
+    }
+
+    const when = (x) => new Date(`${x.date}T${x.heure || "09:00"}`).toLocaleString("fr-FR", { weekday: "long", day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" });
+
+    async function decide(id, decision, commentaire, buttons) {
+      buttons.forEach((b) => (b.disabled = true));
+      const res = await fetch(`/api/validation/${encodeURIComponent(token)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id, decision, commentaire }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { alert(data.erreur || "Erreur"); buttons.forEach((b) => (b.disabled = false)); return; }
+      load();
+    }
+
+    function card(x) {
+      const pending = x.statut === "en validation";
+      const comment = el("textarea", { placeholder: "Votre commentaire (facultatif)" });
+      const approve = el("button", { class: "approve" }, "✓ Valider");
+      const change = el("button", {}, "✎ Demander une modification");
+      approve.addEventListener("click", () => decide(x.id, "approuver", comment.value, [approve, change]));
+      change.addEventListener("click", () => {
+        if (!comment.value.trim()) { comment.focus(); comment.placeholder = "Indiquez ce qu'il faut modifier"; return; }
+        decide(x.id, "modifier", comment.value, [approve, change]);
+      });
+      const label = { "en validation": "En attente de votre avis", "modifs demandées": "Modification demandée", "approuvé": "Validé", "publié": "Publié" }[x.statut] || x.statut;
+      return el("div", { class: "card" },
+        el("div", { class: "row" }, el("b", {}, `${x.plateforme} · ${x.format}`), el("span", { class: `badge ${pending ? "attente" : "ok"}` }, label)),
+        el("div", { class: "muted" }, `Prévu ${when(x)}`),
+        el("p", { style: "font-weight:600;margin:10px 0 0" }, x.sujet),
+        x.legende ? el("div", { class: "legende" }, x.legende) : el("p", { class: "muted" }, "Légende en cours de rédaction."),
+        /^https:\/\//.test(x.image_url || "") ? el("img", { src: x.image_url, alt: "Visuel prévu" }) : null,
+        x.commentaire_client ? el("p", { class: "muted" }, `Votre commentaire : « ${x.commentaire_client} »`) : null,
+        pending ? [comment, el("div", { class: "actions" }, approve, change)] : null);
+    }
+
+    async function load() {
+      const res = await fetch(`/api/validation/${encodeURIComponent(token)}`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { list.replaceChildren(el("p", { class: "card" }, data.erreur || "Lien invalide.")); return; }
+      document.getElementById("title").textContent = `Contenus ${data.marque}`;
+      document.title = `Validation · ${data.marque}`;
+      const order = { "en validation": 0, "modifs demandées": 1, "approuvé": 2, "publié": 3 };
+      const items = data.contenus.sort((a, b) => order[a.statut] - order[b.statut] || `${a.date}${a.heure}`.localeCompare(`${b.date}${b.heure}`));
+      list.replaceChildren(...(items.length ? items.map(card) : [el("p", { class: "card muted" }, "Aucun contenu à valider pour le moment.")]));
+    }
+    load();
+  </script>
+</body>
+</html>

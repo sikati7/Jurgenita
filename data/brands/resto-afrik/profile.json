@@ -5,7 +5,13 @@
   "activite": "Restaurant et média culinaire africain : recettes, coulisses de cuisine, culture et street-food",
   "niche": "Cuisine africaine (Afrique centrale et de l'Ouest), food content, storytelling culturel",
   "ton_de_marque": "Chaleureux, fier de ses racines, drôle sans être moqueur, tutoiement sur les réseaux, vouvoiement par mail professionnel",
-  "plateformes": ["Instagram", "TikTok", "Facebook", "YouTube Shorts", "LinkedIn"],
+  "plateformes": [
+    "Instagram",
+    "TikTok",
+    "Facebook",
+    "YouTube Shorts",
+    "LinkedIn"
+  ],
   "objectifs": [
     "Atteindre 50 000 abonnés Instagram d'ici la fin du trimestre",
     "Remplir le restaurant le mardi et le mercredi soir",
@@ -19,5 +25,16 @@
   ],
   "langue": "fr",
   "fuseau": "Europe/Paris",
-  "heure_reveil": "07:30"
+  "heure_reveil": "07:30",
+  "concurrents": [
+    "Chez Mama Africa",
+    "Le Baobab Gourmand",
+    "Saveurs du Sahel"
+  ],
+  "mots_cles_veille": [
+    "restaurant africain Paris",
+    "ndolé Paris",
+    "Resto-Afrik"
+  ],
+  "site_web": ""
 }

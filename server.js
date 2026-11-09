@@ -9,7 +9,9 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 if (fs.existsSync(path.join(here, ".env"))) process.loadEnvFile(path.join(here, ".env"));
 
 const store = await import("./src/store.js");
+const brands = await import("./src/brands.js");
 const sources = await import("./src/sources.js");
+const publisher = await import("./src/publisher.js");
 const google = await import("./src/connectors/google.js");
 const meta = await import("./src/connectors/meta.js");
 const telegram = await import("./src/connectors/telegram.js");
@@ -21,7 +23,16 @@ const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || "127.0.0.1";
 const GOOGLE_REDIRECT = `http://127.0.0.1:${PORT}/auth/google/callback`;
 const PUBLIC_DIR = path.join(here, "public");
-const STORED = new Set(["profile", "calendar", "notes", "drafts"]);
+const GLOBAL_DATA = { inbox: () => sources.inbox(), agenda: () => sources.agenda(), drafts: () => store.read("drafts") };
+const BRAND_DATA = {
+  profile: (b) => store.read("profile", b),
+  notes: (b) => store.read("notes", b),
+  veille: (b) => store.read("veille", b),
+  calendar: (b) => sources.calendar(b),
+  community: (b) => sources.community(b),
+  stats: (b) => sources.stats(b),
+  ads: (b) => sources.ads(b),
+};
 const MIME = { ".html": "text/html; charset=utf-8", ".css": "text/css", ".js": "text/javascript", ".svg": "image/svg+xml", ".json": "application/json" };
 
 function send(res, status, body) {
@@ -43,56 +54,120 @@ async function readBody(req) {
   return raw ? JSON.parse(raw) : {};
 }
 
-async function readData(name) {
-  if (STORED.has(name)) return store.read(name);
-  if (name === "inbox") return sources.inbox();
-  if (name === "community") return sources.community();
-  if (name === "agenda") return sources.agenda();
-  if (name === "stats") return sources.stats();
-  throw fail(404, "Données inconnues");
-}
+const notify = async (text) => {
+  if (!telegram.ready()) return;
+  try { await telegram.send(text); } catch (err) { console.error("[telegram]", err.message); }
+};
 
-// Briefing pour Telegram, pas plus d'une fois par jour.
+// Briefing pour Telegram : un message par marque, pas plus d'une fois par jour.
 let lastTelegramBriefing = null;
 async function sendTelegramBriefing() {
-  const b = await brain.briefing();
-  await telegram.send(telegram.formatBriefing(b));
+  for (const b of brands.list()) {
+    await telegram.send(`━━ ${b.nom.toUpperCase()} ━━\n\n${telegram.formatBriefing(await brain.briefing(b.id))}`);
+  }
   lastTelegramBriefing = new Date().toDateString();
-  return b;
 }
 
+// Données réunies pour le rapport client, puis analysées par Jurgenita.
+async function buildReport(brand) {
+  const [statistiques, publicite, communaute] = await Promise.all([sources.stats(brand), sources.ads(brand), sources.community(brand)]);
+  const calendrier = sources.calendar(brand);
+  const parType = {};
+  for (const c of communaute) parType[c.type] = (parType[c.type] || 0) + 1;
+  const data = {
+    marque: brands.get(brand).nom,
+    genere_le: new Date().toISOString(),
+    statistiques,
+    publicite: {
+      ...publicite,
+      total_depense: Number(publicite.annonces.reduce((n, a) => n + a.depense, 0).toFixed(2)),
+      total_conversions: publicite.annonces.reduce((n, a) => n + (a.conversions || 0), 0),
+    },
+    communaute: { interactions: communaute.length, par_type: parType },
+    contenus: {
+      publies: calendrier.filter((x) => x.statut === "publié").length,
+      planifies: calendrier.filter((x) => !["publié", "échec"].includes(x.statut)).length,
+    },
+  };
+  return { donnees: data, analyse: await brain.reportInsights(data, brand) };
+}
+
+const VALIDATION_VISIBLE = ["en validation", "modifs demandées", "approuvé", "publié"];
+
 const routes = {
-  "GET /api/status": () => ({
+  "GET /api/status": (body, brand) => ({
     mode: LIVE ? "live" : "demo",
     modele: LIVE ? brain.MODEL : null,
-    profil: store.read("profile"),
-    connexions: { ...sources.connections(), telegram: { configure: telegram.configured(), pret: telegram.ready() } },
+    marque: brand,
+    marques: brands.list(),
+    profil: store.read("profile", brand),
+    connexions: { ...sources.connections(brand), telegram: { configure: telegram.configured(), pret: telegram.ready() } },
   }),
-  "POST /api/briefing": () => brain.briefing(),
-  "POST /api/email/reply": (body) => brain.emailReply(body),
-  "POST /api/studio": (body) => {
+
+  // Marques
+  "POST /api/brands": (body) => brands.create(body),
+  "POST /api/brands/delete": (body) => (brands.remove(body.id), { ok: true }),
+  "PUT /api/brand/connexions": (body, brand) => (brands.saveConfig(brand, body), brands.connectionStatus(brand)),
+  "POST /api/brand/validation-link": (body, brand) => ({ chemin: `/validation/${brands.validationToken(brand)}` }),
+  "PUT /api/profile": (body, brand) => store.write("profile", { ...store.read("profile", brand), ...body }, brand),
+
+  // Assistant
+  "POST /api/briefing": (body, brand) => brain.briefing(brand),
+  "POST /api/email/reply": (body, brand) => brain.emailReply(body, brand),
+  "POST /api/studio": (body, brand) => {
     if (!body.sujet?.trim()) throw fail(400, "Indiquez un sujet");
-    return brain.contentStudio(body);
+    return brain.contentStudio(body, brand);
   },
-  "POST /api/vision": (body) => {
+  "POST /api/vision": (body, brand) => {
     if (!Array.isArray(body.images) || !body.images.length) throw fail(400, "Aucune image reçue");
-    return brain.visionReport(body);
+    return brain.visionReport(body, brand);
   },
-  "POST /api/community": () => brain.communityTriage(),
-  "POST /api/community/publish": async (body) => {
-    if (!meta.configured()) throw fail(400, "Meta n'est pas connecté");
+  "POST /api/chat": (body, brand) => {
+    if (!body.message?.trim()) throw fail(400, "Message vide");
+    return brain.chat({ conversationId: body.conversationId || randomUUID(), message: body.message }, brand);
+  },
+  "POST /api/chat/reset": (body, brand) => (brain.resetConversation(body.conversationId, brand), { ok: true }),
+
+  // Communauté
+  "POST /api/community": (body, brand) => brain.communityTriage(brand),
+  "POST /api/community/publish": async (body, brand) => {
     if (!body.message?.trim()) throw fail(400, "Réponse vide");
-    await meta.reply(body);
+    if (body.reseau === "google") {
+      if (!google.hasBusinessScope()) throw fail(400, "Avis Google non connectés");
+      await google.replyReview(body.ref, body.message);
+      return { ok: true };
+    }
+    const cfg = brands.config(brand).meta;
+    if (!meta.configured(cfg)) throw fail(400, "Meta n'est pas connecté pour cette marque");
+    await meta.reply(cfg, body);
     return { ok: true };
   },
-  "POST /api/chat": (body) => {
-    if (!body.message?.trim()) throw fail(400, "Message vide");
-    return brain.chat({ conversationId: body.conversationId || randomUUID(), message: body.message });
+
+  // Calendrier, validation et publication
+  "POST /api/calendar": (body, brand) => store.append("calendar", { statut: "idée", heure: "18:00", legende: "", image_url: "", ...body }, brand),
+  "POST /api/calendar/update": (body, brand) => {
+    const { id, ...changes } = body;
+    if (changes.statut && !publisher.STATUTS.includes(changes.statut)) throw fail(400, "Statut inconnu");
+    if (changes.statut === "publié") throw fail(400, "Utilisez « Publier maintenant »");
+    return sources.updateCalendarItem(brand, id, changes);
   },
-  "POST /api/chat/reset": (body) => (brain.resetConversation(body.conversationId), { ok: true }),
-  "POST /api/calendar": (body) => store.append("calendar", { statut: "idée", ...body }),
-  "POST /api/drafts": async (body) => {
-    const draft = store.append("drafts", { ...body, cree: new Date().toISOString() });
+  "POST /api/calendar/delete": (body, brand) => (sources.removeCalendarItem(brand, body.id), { ok: true }),
+  "POST /api/calendar/publish": (body, brand) => publisher.publishNow(brand, body.id),
+
+  // Publicité
+  "POST /api/ads/generate": (body, brand) => {
+    if (!body.produit?.trim()) throw fail(400, "Décrivez le produit ou l'offre");
+    return brain.adsGenerator(body, brand);
+  },
+  "POST /api/ads/review": (body, brand) => brain.adsReview(brand),
+
+  // Veille et rapport
+  "POST /api/veille": (body, brand) => brain.veille(brand),
+  "GET /api/rapport": (body, brand) => buildReport(brand),
+
+  // Divers
+  "POST /api/drafts": async (body, brand) => {
+    const draft = store.append("drafts", { ...body, marque: brand, cree: new Date().toISOString() });
     // Si Gmail est connecté, le brouillon d'un mail est aussi créé dans Gmail.
     if (body.canal === "email" && google.connected()) {
       await google.createDraft({ to: body.destinataire, subject: body.objet, body: body.texte, threadId: body.threadId, inReplyTo: body.messageId });
@@ -106,9 +181,33 @@ const routes = {
     await sendTelegramBriefing();
     return { ok: true };
   },
-  "PUT /api/profile": (body) => store.write("profile", { ...store.read("profile"), ...body }),
   "POST /api/reset": () => (store.reset(), { ok: true }),
 };
+
+// Espace de validation du client : accessible avec le seul lien secret.
+async function handleValidation(req, res, url) {
+  const token = url.pathname.split("/")[3];
+  const brand = brands.brandByValidationToken(token);
+  if (!brand) return send(res, 404, { erreur: "Lien de validation invalide" });
+  if (req.method === "GET") {
+    return send(res, 200, {
+      marque: brand.nom,
+      contenus: sources.calendar(brand.id).filter((x) => VALIDATION_VISIBLE.includes(x.statut))
+        .map(({ id, date, heure, plateforme, format, sujet, legende, image_url, statut, commentaire_client }) => ({ id, date, heure, plateforme, format, sujet, legende, image_url, statut, commentaire_client })),
+    });
+  }
+  const body = await readBody(req);
+  const item = sources.calendar(brand.id).find((x) => x.id === body.id);
+  if (!item || item.statut !== "en validation") return send(res, 400, { erreur: "Ce contenu n'attend pas de validation" });
+  if (!["approuver", "modifier"].includes(body.decision)) return send(res, 400, { erreur: "Décision inconnue" });
+  const commentaire = String(body.commentaire || "").slice(0, 2000);
+  const updated = sources.updateCalendarItem(brand.id, item.id, {
+    statut: body.decision === "approuver" ? "approuvé" : "modifs demandées",
+    commentaire_client: commentaire,
+  });
+  await notify(`${body.decision === "approuver" ? "👍" : "✏️"} ${brand.nom} — le client a ${body.decision === "approuver" ? "approuvé" : "demandé des modifications sur"} « ${item.sujet} »${commentaire ? `\n« ${commentaire} »` : ""}`);
+  return send(res, 200, { ok: true, statut: updated.statut });
+}
 
 // Connexion Google (OAuth) : /auth/google redirige vers Google, qui revient sur le callback.
 const oauthStates = new Set();
@@ -125,7 +224,7 @@ async function handleAuth(req, res, url) {
   }
   const state = url.searchParams.get("state");
   const code = url.searchParams.get("code");
-  let message = "Gmail et Google Agenda sont connectés. Vous pouvez fermer cet onglet.";
+  let message = "Votre compte Google est connecté. Vous pouvez fermer cet onglet.";
   if (!oauthStates.delete(state)) message = "Lien de connexion expiré. Recommencez depuis Jurgenita.";
   else if (!code) message = `Connexion annulée (${url.searchParams.get("error") || "aucun code"}).`;
   else {
@@ -136,8 +235,7 @@ async function handleAuth(req, res, url) {
   res.end(`<!doctype html><meta charset="utf-8"><title>Jurgenita</title><body style="background:#05080f;color:#e6f1ff;font:16px system-ui;display:grid;place-items:center;height:100vh;margin:0"><div style="text-align:center"><p>${message.replace(/[<>&]/g, "")}</p><p><a style="color:#4fd8ff" href="/">Retour à Jurgenita</a></p></div>`);
 }
 
-function serveStatic(req, res, url) {
-  const file = path.normalize(path.join(PUBLIC_DIR, url.pathname === "/" ? "index.html" : url.pathname));
+function serveFile(res, file) {
   if (!file.startsWith(PUBLIC_DIR) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
     res.writeHead(404).end("Introuvable");
     return;
@@ -146,31 +244,52 @@ function serveStatic(req, res, url) {
   fs.createReadStream(file).pipe(res);
 }
 
+function brandOf(req, url) {
+  const id = url.searchParams.get("marque") || req.headers["x-marque"] || brands.defaultId();
+  return brands.get(String(id)).id;
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
-  if (url.pathname.startsWith("/auth/google")) return handleAuth(req, res, url);
-  if (!url.pathname.startsWith("/api/")) return serveStatic(req, res, url);
-
   try {
+    if (url.pathname.startsWith("/auth/google")) return await handleAuth(req, res, url);
+    if (url.pathname.startsWith("/api/validation/")) return await handleValidation(req, res, url);
+    if (url.pathname.startsWith("/validation/")) return serveFile(res, path.join(PUBLIC_DIR, "validation.html"));
+    if (!url.pathname.startsWith("/api/")) {
+      return serveFile(res, path.normalize(path.join(PUBLIC_DIR, url.pathname === "/" ? "index.html" : url.pathname)));
+    }
+
+    const brand = brandOf(req, url);
     const dataMatch = req.method === "GET" && url.pathname.match(/^\/api\/data\/(\w+)$/);
-    if (dataMatch) return send(res, 200, await readData(dataMatch[1]));
+    if (dataMatch) {
+      const name = dataMatch[1];
+      if (GLOBAL_DATA[name]) return send(res, 200, await GLOBAL_DATA[name]());
+      if (BRAND_DATA[name]) return send(res, 200, await BRAND_DATA[name](brand));
+      if (name === "brands") return send(res, 200, brands.list());
+      throw fail(404, "Données inconnues");
+    }
     const handler = routes[`${req.method} ${url.pathname}`];
     if (!handler) return send(res, 404, { erreur: "Route inconnue" });
-    send(res, 200, await handler(await readBody(req)));
+    send(res, 200, await handler(req.method === "GET" ? {} : await readBody(req), brand));
   } catch (err) {
-    console.error(`[${req.method} ${url.pathname}]`, err);
-    send(res, err.status || 500, { erreur: err.message });
+    if (!err.status || err.status >= 500) console.error(`[${req.method} ${url.pathname}]`, err);
+    if (!res.headersSent) send(res, err.status || 500, { erreur: err.message });
   }
 });
 
 server.listen(PORT, HOST, () => {
-  const c = sources.connections();
+  const c = sources.connections(brands.defaultId());
   console.log(`\n  ◉ JURGENITA en ligne — http://${HOST}:${server.address().port}`);
   console.log(LIVE ? `    Cerveau : ${brain.MODEL}` : "    Cerveau : mode démo (ajoutez ANTHROPIC_API_KEY dans .env)");
+  console.log(`    Marques : ${brands.list().map((b) => b.nom).join(", ")}`);
   console.log(`    Gmail : ${c.gmail.connecte ? "connecté" : c.gmail.configure ? "à connecter depuis le Profil" : "non configuré"}`);
-  console.log(`    Instagram / Facebook : ${c.meta.configure ? "connecté" : "non configuré"}`);
   console.log(`    Telegram : ${telegram.ready() ? "prêt" : telegram.configured() ? "envoyez un message au bot pour obtenir TELEGRAM_CHAT_ID" : "non configuré"}\n`);
 });
+
+// Publication programmée : vérifie chaque minute les contenus approuvés.
+if (!process.env.JURGENITA_NO_SCHEDULER) {
+  setInterval(() => publisher.tick(notify).catch((err) => console.error("[publication]", err.message)), 60_000);
+}
 
 if (telegram.configured()) {
   telegram.listen(async (text) => {
@@ -179,15 +298,15 @@ if (telegram.configured()) {
       return "Voilà pour ce matin, Boss.";
     }
     if (text === "/start") return "Jurgenita à votre service. Écrivez « briefing » ou posez-moi une question.";
-    return (await brain.chat({ conversationId: "telegram", message: text })).texte;
+    return (await brain.chat({ conversationId: "telegram", message: text }, brands.defaultId())).texte;
   });
 
-  // Briefing automatique à l'heure de réveil du profil (heure de Paris).
+  // Briefing automatique à l'heure de réveil (heure de Paris).
   setInterval(async () => {
     if (!telegram.ready()) return;
     const now = new Date();
     const hm = now.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Paris" });
-    if (hm !== store.read("profile").heure_reveil || lastTelegramBriefing === now.toDateString()) return;
+    if (hm !== store.read("profile", brands.defaultId()).heure_reveil || lastTelegramBriefing === now.toDateString()) return;
     try { await sendTelegramBriefing(); }
     catch (err) { console.error("[telegram] briefing automatique :", err.message); }
   }, 30_000);

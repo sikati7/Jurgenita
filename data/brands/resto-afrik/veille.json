@@ -1,0 +1,15 @@
+{
+  "mentions": [
+    {"source":"Google","titre":"Avis 5★ : « le meilleur ndolé de Paris »","sentiment":"positif","url":""},
+    {"source":"TikTok","titre":"@foodie.paris cite Resto-Afrik dans son top 5 des restos africains (120k vues)","sentiment":"positif","url":""},
+    {"source":"Forum local","titre":"Discussion sur l'attente le samedi soir","sentiment":"negatif","url":""}
+  ],
+  "concurrents": [
+    {"nom":"Chez Mama Africa","activite":"Lance un brunch africain le dimanche, très partagé sur Instagram."},
+    {"nom":"Le Baobab Gourmand","activite":"Campagne -30 % sur Deliveroo cette semaine."}
+  ],
+  "tendances": [
+    "Les vidéos « POV première dégustation » cartonnent sur TikTok food",
+    "Hausse des recherches « brunch africain Paris » (+40 % sur 3 mois)"
+  ]
+}

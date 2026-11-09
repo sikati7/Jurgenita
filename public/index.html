@@ -19,6 +19,10 @@
       <span class="brand-name">J·U·R·G·E·N·I·T·A</span>
     </div>
     <div class="top-info">
+      <label class="brand-switch" title="Marque (client) active">
+        <span class="brand-swatch" id="brand-swatch"></span>
+        <select id="brand-select" aria-label="Marque active"></select>
+      </label>
       <span id="clock" class="clock">--:--</span>
       <span id="mode" class="badge">…</span>
     </div>
@@ -31,6 +35,8 @@
       <button class="nav-btn" data-view="studio"><span>✦</span>Studio</button>
       <button class="nav-btn" data-view="communaute"><span>◎</span>Communauté</button>
       <button class="nav-btn" data-view="calendrier"><span>▦</span>Calendrier</button>
+      <button class="nav-btn" data-view="pub"><span>◈</span>Publicité</button>
+      <button class="nav-btn" data-view="veille"><span>⌖</span>Veille</button>
       <button class="nav-btn" data-view="stats"><span>⟋</span>Stats</button>
       <button class="nav-btn" data-view="profil"><span>⚙</span>Profil</button>
     </nav>
@@ -127,7 +133,9 @@
       <section class="view" id="view-calendrier">
         <div class="view-head">
           <h2>Calendrier éditorial</h2>
+          <button class="btn gold" id="btn-validation-link">🔗 Lien de validation pour le client</button>
         </div>
+        <p class="muted" style="margin-bottom:14px">Circuit : idée → brouillon → <b>en validation</b> (le client approuve ou demande des modifs) → <b>approuvé</b> → publié automatiquement à l'heure prévue. Cliquez sur un contenu pour le modifier.</p>
         <form id="cal-form" class="panel form inline">
           <input type="date" id="cal-date" required>
           <select id="cal-plateforme"></select>
@@ -135,20 +143,84 @@
           <input id="cal-sujet" placeholder="Sujet" required>
           <button class="btn" type="submit">+ Ajouter</button>
         </form>
+        <div id="cal-editor" class="panel hidden"></div>
         <div id="cal-grid" class="cal-grid"></div>
-        <h3 class="sub">Brouillons en attente de validation</h3>
+        <h3 class="sub">À traiter</h3>
+        <ul id="cal-todo" class="list"></ul>
+        <h3 class="sub">Brouillons de réponses (mails, messages)</h3>
         <ul id="drafts" class="list"></ul>
       </section>
 
       <!-- STATS -->
       <section class="view" id="view-stats">
-        <div class="view-head"><h2>Tableau de bord</h2><p class="muted" id="stats-period"></p></div>
+        <div class="view-head">
+          <h2>Tableau de bord</h2>
+          <p class="muted" id="stats-period"></p>
+          <a class="btn gold" id="btn-report" target="_blank" rel="noopener">📄 Rapport client (PDF)</a>
+        </div>
         <div id="stats-tiles" class="tiles"></div>
         <div class="panel">
           <h3 class="sub">Abonnés par plateforme</h3>
           <div id="stats-bars" class="bars"></div>
         </div>
-        <div id="stats-resto" class="tiles"></div>
+        <div id="stats-extra" class="tiles"></div>
+      </section>
+
+      <!-- PUBLICITÉ -->
+      <section class="view" id="view-pub">
+        <div class="view-head">
+          <h2>Publicité</h2>
+          <button class="btn" id="btn-ads-review">◈ Analyser mes campagnes</button>
+        </div>
+        <div class="panel">
+          <h3 class="sub">Performances des annonces · <span id="ads-period"></span></h3>
+          <div class="table-wrap"><table class="data-table" id="ads-table"></table></div>
+          <div id="ads-review"></div>
+        </div>
+        <div class="view-head" style="margin-top:32px">
+          <h2>Générateur d'annonces</h2>
+          <p class="muted">Variantes A/B/C, audiences, brief créatif et plan de test, prêts à lancer.</p>
+        </div>
+        <form id="ads-form" class="panel form">
+          <label>Produit ou offre
+            <input id="ads-produit" required placeholder="ex. Brunch africain du dimanche à 25 €">
+          </label>
+          <fieldset class="chips" id="ads-plateformes">
+            <legend>Régies</legend>
+            <label><input type="checkbox" value="Meta Ads" checked> Meta Ads</label>
+            <label><input type="checkbox" value="Google Ads"> Google Ads</label>
+            <label><input type="checkbox" value="TikTok Ads"> TikTok Ads</label>
+          </fieldset>
+          <div class="form-row">
+            <label>Objectif
+              <select id="ads-objectif">
+                <option>Ventes / réservations</option>
+                <option>Génération de contacts</option>
+                <option>Trafic vers le site</option>
+                <option>Notoriété</option>
+                <option>Installations d'application</option>
+              </select>
+            </label>
+            <label>Budget
+              <input id="ads-budget" placeholder="ex. 300 € sur 2 semaines">
+            </label>
+          </div>
+          <label>Audience connue (facultatif)
+            <input id="ads-audience" placeholder="ex. 25-40 ans, Paris Est, amateurs de cuisine du monde">
+          </label>
+          <button class="btn primary" type="submit">◈ Générer la campagne</button>
+        </form>
+        <div id="ads-result"></div>
+      </section>
+
+      <!-- VEILLE -->
+      <section class="view" id="view-veille">
+        <div class="view-head">
+          <h2>Veille</h2>
+          <button class="btn" id="btn-veille">⌖ Lancer la veille</button>
+        </div>
+        <p class="muted" style="margin-bottom:14px" id="veille-info">Mentions de la marque, actualité des concurrents et tendances de la niche, cherchées sur le web.</p>
+        <div id="veille-result"></div>
       </section>
 
       <!-- PROFIL -->
@@ -158,9 +230,18 @@
           <p class="muted">Jurgenita s'appuie sur ces informations pour chaque décision.</p>
         </div>
         <div class="panel" style="margin-bottom:20px">
+          <h3 class="sub">Marques gérées</h3>
+          <ul id="brands-list" class="list"></ul>
+          <form id="brand-form" class="form-row" style="margin-top:12px">
+            <input id="brand-name" placeholder="Nom d'une nouvelle marque (client)" required>
+            <button class="btn" type="submit">+ Ajouter la marque</button>
+          </form>
+        </div>
+        <div class="panel" style="margin-bottom:20px">
           <h3 class="sub">Connexions</h3>
           <ul id="connexions" class="list"></ul>
         </div>
+        <form id="brand-config" class="panel form" style="margin-bottom:20px" autocomplete="off"></form>
         <form id="profile-form" class="panel form"></form>
         <div class="panel">
           <h3 class="sub">Mémoire de Jurgenita</h3>
@@ -183,6 +264,7 @@
         <button>Comment gérer le commentaire du troll ?</button>
         <button>Quelle est la meilleure heure pour publier ?</button>
         <button>Planifie la vidéo sur le koki samedi</button>
+        <button>Comment vont mes publicités ?</button>
       </div>
       <form id="chat-form" class="chat-form">
         <button type="button" class="mic" id="btn-mic" title="Parler (maintenir Espace)">🎙</button>

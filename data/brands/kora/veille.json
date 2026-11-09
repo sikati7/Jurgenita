@@ -1,0 +1,15 @@
+{
+  "mentions": [
+    {"source":"Instagram","titre":"@aminata.style porte la veste Kente Lumière (18k likes)","sentiment":"positif","url":""},
+    {"source":"Blog mode","titre":"Maison Kora citée dans « 10 marques éthiques à suivre »","sentiment":"positif","url":""},
+    {"source":"Google","titre":"Plusieurs avis signalent des tailles qui taillent petit","sentiment":"negatif","url":""}
+  ],
+  "concurrents": [
+    {"nom":"Wax & Co","activite":"Collaboration avec une influenceuse à 400k abonnés pour les fêtes."},
+    {"nom":"Atelier Ndaku","activite":"Lance un service de retouche gratuite."}
+  ],
+  "tendances": [
+    "Les vidéos « essayage en 3 tailles » rassurent sur la coupe et convertissent bien",
+    "Forte demande pour des cartes cadeaux mode éthique avant Noël"
+  ]
+}

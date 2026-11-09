@@ -1,0 +1,6 @@
+[
+  {"id": "k1", "demo": true, "decalage_jours": 0, "heure": "19:00", "plateforme": "Instagram", "format": "Reel", "sujet": "Les secrets de Maman #4 — attiéké poisson braisé", "legende": "Le secret de l'attiéké de Maman, enfin dévoilé 🔥 Tu le manges avec quoi, toi ? 👇 #cuisineafricaine #restoafrik", "image_url": "", "statut": "approuvé"},
+  {"id": "k2", "demo": true, "decalage_jours": 1, "heure": "19:30", "plateforme": "TikTok", "format": "Vidéo", "sujet": "POV : tu goûtes le piment de Maman pour la 1re fois", "legende": "POV : Maman a dit « il pique un peu » 🥵 #piment #foodtok #restoafrik", "image_url": "", "statut": "en validation"},
+  {"id": "k3", "demo": true, "decalage_jours": 2, "heure": "12:00", "plateforme": "Facebook", "format": "Photo", "sujet": "Offre « Mardi des racines »", "legende": "Ce mardi soir, le dessert est offert à tous nos abonnés qui montrent ce post 🎁 Réservez au 01 00 00 00 00.", "image_url": "", "statut": "en validation"},
+  {"id": "k4", "demo": true, "decalage_jours": 4, "heure": "18:00", "plateforme": "Instagram", "format": "Carrousel", "sujet": "5 plats à goûter absolument", "legende": "", "image_url": "", "statut": "idée"}
+]

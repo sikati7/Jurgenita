@@ -21,6 +21,11 @@ function el(tag, attrs = {}, ...children) {
   return node;
 }
 
+// Remplace le contenu d'un élément en ignorant les valeurs vides, comme el().
+function fill(target, ...children) {
+  target.replaceChildren(...children.flat().filter((c) => c != null && c !== false));
+}
+
 function storage(key, value) {
   try {
     if (value === undefined) return localStorage.getItem(key);
@@ -32,7 +37,7 @@ function storage(key, value) {
 async function api(path, body, method = body === undefined ? "GET" : "POST") {
   const res = await fetch(path, {
     method,
-    headers: body === undefined ? {} : { "content-type": "application/json" },
+    headers: { ...(state.brand ? { "x-marque": state.brand } : {}), ...(body === undefined ? {} : { "content-type": "application/json" }) },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}));
@@ -60,6 +65,8 @@ const LABELS = {
 const tag = (key) => (LABELS[key] ? el("span", { class: `tag ${key}` }, LABELS[key]) : null);
 
 const state = {
+  brand: storage("jurgenita.brand"),
+  brands: [],
   profile: null,
   briefing: null,
   triage: null,
@@ -272,7 +279,7 @@ function show(view) {
   $$(".nav-btn").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
   $$(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${view}`));
   storage("jurgenita.view", view);
-  ({ mails: renderMails, communaute: renderCommunity, calendrier: renderCalendar, stats: renderStats, profil: renderProfile }[view])?.();
+  ({ mails: renderMails, communaute: renderCommunity, calendrier: renderCalendar, pub: renderAds, veille: renderVeille, stats: renderStats, profil: renderProfile }[view])?.();
 }
 
 // ---------------------------------------------------------------- Briefing
@@ -428,7 +435,7 @@ function tomorrow() {
 }
 
 function renderStudio(r) {
-  $("#studio-result").replaceChildren(
+  fill($("#studio-result"),
     el("div", { class: "panel summary" }, el("b", {}, "Concept · "), r.concept),
     el("div", { class: "posts" }, r.posts.map((p) => {
       const full = `${p.accroche}\n\n${p.legende}\n\n${p.hashtags.join(" ")}`;
@@ -563,11 +570,12 @@ async function renderCommunity() {
         el("button", { class: "btn small", onclick: () => copy(area.value) }, "Copier la réponse"),
         el("button", { class: "btn small", onclick: async () => { await api("/api/drafts", { canal: c.plateforme, destinataire: c.auteur, objet: c.type, texte: area.value }); toast("Réponse mise en attente"); } }, "Mettre en attente"),
         c.ref ? el("button", { class: "btn small gold", onclick: async (e) => {
-          if (!area.value.trim() || !confirm(`Publier cette réponse sous le commentaire de ${c.auteur} sur ${c.plateforme} ?\n\n${area.value}`)) return;
+          const where = c.type === "DM" ? `en message privé à ${c.auteur}` : c.type === "avis" ? `sous l'avis Google de ${c.auteur}` : `sous le commentaire de ${c.auteur} sur ${c.plateforme}`;
+          if (!area.value.trim() || !confirm(`Publier cette réponse ${where} ?\n\n${area.value}`)) return;
           e.currentTarget.disabled = true;
           try { await api("/api/community/publish", { reseau: c.reseau, ref: c.ref, message: area.value }); toast("Réponse publiée"); e.currentTarget.textContent = "✓ Publiée"; }
           catch (err) { toast(err.message); e.currentTarget.disabled = false; }
-        } }, `Publier sur ${c.plateforme}`) : null));
+        } }, c.type === "DM" ? "Répondre en privé" : c.type === "avis" ? "Répondre à l'avis" : `Publier sur ${c.plateforme}`) : null));
   }));
   if (state.triage) {
     $("#community-summary").textContent = state.triage.synthese;
@@ -593,17 +601,29 @@ $("#btn-triage").addEventListener("click", async (e) => {
 
 // ---------------------------------------------------------------- Calendrier
 
+const STATUTS = ["idée", "brouillon", "en validation", "modifs demandées", "approuvé", "publié", "à publier manuellement", "échec"];
+const statut = (x) => el("span", { class: "statut", "data-statut": x }, x);
+const isoDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+let calendarItems = [];
+
 async function renderCalendar() {
   const [items, drafts] = await Promise.all([api("/api/data/calendar"), api("/api/data/drafts")]);
+  calendarItems = items;
   const start = new Date();
   start.setHours(0, 0, 0, 0);
   const days = Array.from({ length: 14 }, (_, i) => new Date(start.getTime() + i * 86400000));
-  const key = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   $("#cal-grid").replaceChildren(...days.map((d, i) =>
     el("div", { class: `cal-day${i === 0 ? " today" : ""}` },
       el("header", {}, d.toLocaleDateString("fr-FR", { weekday: "short", day: "numeric", month: "short" })),
-      items.filter((x) => x.date === key(d)).map((x) =>
-        el("div", { class: "cal-item" }, el("b", {}, `${x.plateforme} · ${x.format}`), x.sujet)))));
+      items.filter((x) => x.date === isoDay(d)).sort((a, b) => (a.heure || "").localeCompare(b.heure || "")).map((x) =>
+        el("div", { class: "cal-item", "data-statut": x.statut, role: "button", tabindex: "0", onclick: () => editCalendarItem(x.id), onkeydown: (e) => e.key === "Enter" && editCalendarItem(x.id) },
+          el("b", {}, `${x.heure || ""} ${x.plateforme} · ${x.format}`), x.sujet, el("small", {}, x.statut))))));
+  const todo = items.filter((x) => ["en validation", "modifs demandées", "à publier manuellement", "échec"].includes(x.statut));
+  $("#cal-todo").replaceChildren(...(todo.length ? todo.map((x) =>
+    el("li", { class: "clickable", style: "cursor:pointer", onclick: () => editCalendarItem(x.id) },
+      el("div", { class: "row" }, el("span", { class: "from" }, `${x.plateforme} · ${x.sujet}`), statut(x.statut)),
+      el("div", { class: "subj" }, `${x.date} à ${x.heure || "?"}${x.commentaire_client ? ` · Client : « ${x.commentaire_client} »` : ""}${x.erreur ? ` · ${x.erreur}` : ""}`)))
+    : [el("li", { class: "muted" }, "Rien en attente.")]));
   $("#drafts").replaceChildren(...(drafts.length ? drafts.slice().reverse().map((d) =>
     el("li", {},
       el("div", { class: "row" }, el("span", { class: "from" }, `${d.canal} → ${d.destinataire}`), el("span", { class: "date" }, d.cree ? fmtDate(d.cree) : "")),
@@ -611,6 +631,57 @@ async function renderCalendar() {
       el("p", { class: "quote", style: "white-space:pre-wrap;margin-top:6px" }, d.texte),
       el("button", { class: "btn small", onclick: () => copy(d.texte) }, "Copier")))
     : [el("li", { class: "muted" }, "Aucun brouillon pour l'instant.")]));
+}
+
+function editCalendarItem(id) {
+  const x = calendarItems.find((i) => i.id === id);
+  if (!x) return;
+  const box = $("#cal-editor");
+  const f = {
+    date: el("input", { type: "date", value: x.date || "" }),
+    heure: el("input", { type: "time", value: x.heure || "18:00" }),
+    plateforme: el("select", {}, [...new Set([...(state.profile?.plateformes || []), x.plateforme])].map((p) => el("option", { selected: p === x.plateforme }, p))),
+    format: el("input", { value: x.format || "" }),
+    sujet: el("input", { value: x.sujet || "" }),
+    legende: el("textarea", { rows: 5 }, x.legende || ""),
+    image_url: el("input", { value: x.image_url || "", placeholder: "https://… (obligatoire pour publier sur Instagram)" }),
+  };
+  const values = () => Object.fromEntries(Object.entries(f).map(([k, input]) => [k, input.value]));
+  const act = (label, cls, fn) => el("button", { class: `btn small ${cls}`, type: "button", onclick: async (e) => {
+    e.currentTarget.disabled = true;
+    try { await fn(); await renderCalendar(); } catch (err) { toast(err.message); }
+    e.currentTarget.disabled = false;
+  } }, label);
+  const save = (extra = {}) => api("/api/calendar/update", { id, ...values(), ...extra });
+  box.classList.remove("hidden");
+  fill(box,
+    el("div", { class: "row" }, el("h3", { class: "sub", style: "margin:0" }, "Contenu"), statut(x.statut)),
+    x.commentaire_client ? el("p", { class: "summary panel", style: "margin:12px 0" }, `Commentaire du client : « ${x.commentaire_client} »`) : null,
+    x.erreur ? el("p", { class: "over" }, x.erreur) : null,
+    el("div", { class: "form", style: "margin:12px 0" },
+      el("div", { class: "form-row" }, el("label", {}, "Date", f.date), el("label", {}, "Heure", f.heure), el("label", {}, "Plateforme", f.plateforme), el("label", {}, "Format", f.format)),
+      el("label", {}, "Sujet", f.sujet),
+      el("label", {}, "Légende", f.legende),
+      el("label", {}, "Image (URL publique)", f.image_url)),
+    el("div", { class: "meta" },
+      act("Enregistrer", "", async () => { await save(); toast("Contenu enregistré"); }),
+      ["idée", "brouillon", "modifs demandées"].includes(x.statut) ? act("Envoyer en validation au client", "gold", async () => { await save({ statut: "en validation" }); toast("En attente du client"); }) : null,
+      x.statut !== "approuvé" && x.statut !== "publié" ? act("Approuver moi-même", "", async () => { await save({ statut: "approuvé" }); toast("Approuvé : il partira à l'heure prévue"); }) : null,
+      x.statut === "approuvé" ? act("Publier maintenant", "primary", async () => {
+        if (!confirm(`Publier maintenant sur ${x.plateforme} ?`)) return;
+        await save();
+        await api("/api/calendar/publish", { id });
+        toast("Publié !");
+      }) : null,
+      ["approuvé", "à publier manuellement", "échec"].includes(x.statut) ? act("Remettre en brouillon", "", async () => { await save({ statut: "brouillon", erreur: "" }); }) : null,
+      act("Supprimer", "danger flat", async () => {
+        if (!confirm("Supprimer ce contenu ?")) return;
+        await api("/api/calendar/delete", { id });
+        box.classList.add("hidden");
+      }),
+      el("button", { class: "btn small", type: "button", onclick: () => box.classList.add("hidden") }, "Fermer")),
+  );
+  box.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
 function refreshLists() {
@@ -626,33 +697,47 @@ $("#cal-form").addEventListener("submit", async (e) => {
   renderCalendar();
 });
 
+$("#btn-validation-link").addEventListener("click", async () => {
+  try {
+    const { chemin } = await api("/api/brand/validation-link", {});
+    const url = `${location.origin}${chemin}`;
+    await copy(url);
+    toast("Lien copié. Il ne fonctionne pour le client qu'une fois Jurgenita hébergée en ligne.");
+  } catch (err) { toast(err.message); }
+});
+
 // ---------------------------------------------------------------- Stats
 
 async function renderStats() {
   const s = await api("/api/data/stats");
   $("#stats-period").textContent = s.periode;
   const entries = Object.entries(s.plateformes);
-  const n = (x) => x.toLocaleString("fr-FR");
+  const n = (x) => Number(x ?? 0).toLocaleString("fr-FR");
+  $("#btn-report").href = `/rapport.html?marque=${encodeURIComponent(state.brand || "")}`;
+  if (!entries.length) {
+    $("#stats-tiles").replaceChildren(el("p", { class: "panel muted" }, "Pas encore de statistiques pour cette marque : connectez ses comptes dans Profil."));
+    $("#stats-bars").replaceChildren();
+    $("#stats-extra").replaceChildren();
+    return;
+  }
   $("#stats-tiles").replaceChildren(...entries.map(([name, p]) =>
     el("div", { class: "tile" },
       el("div", { class: "label" }, name),
       el("div", { class: "value" }, n(p.abonnes)),
       el("div", { class: `delta${p.taux_engagement < 3 ? " low" : ""}` }, p.source === "réel"
         ? [`● En direct`, p.interactions_moyennes_par_post != null ? ` · ${n(p.interactions_moyennes_par_post)} interactions / post` : ""].join("")
-        : `+${n(p.evolution_abonnes)} · ${String(p.taux_engagement).replace(".", ",")} % d'engagement`))));
-  const max = Math.max(...entries.map(([, p]) => p.abonnes));
+        : `+${n(p.evolution_abonnes)} · ${String(p.taux_engagement ?? "–").replace(".", ",")} % d'engagement`))));
+  const max = Math.max(1, ...entries.map(([, p]) => p.abonnes || 0));
   $("#stats-bars").replaceChildren(...entries.map(([name, p]) =>
     el("div", { class: "bar" },
       el("span", {}, name),
       el("div", { class: "bar-track" }, el("div", { class: "bar-fill", style: `width:${(p.abonnes / max) * 100}%` })),
       el("span", { class: "num" }, n(p.abonnes)))));
-  const r = s.restaurant;
-  $("#stats-resto").replaceChildren(
-    el("div", { class: "tile" }, el("div", { class: "label" }, "Couverts / semaine"), el("div", { class: "value" }, r.couverts_semaine)),
-    el("div", { class: "tile" }, el("div", { class: "label" }, "Mardi soir"), el("div", { class: "value" }, r.mardi), el("div", { class: "delta low" }, "Jour le plus faible")),
-    el("div", { class: "tile" }, el("div", { class: "label" }, "Samedi"), el("div", { class: "value" }, r.samedi)),
-    el("div", { class: "tile" }, el("div", { class: "label" }, "Note Google"), el("div", { class: "value" }, String(r.note_google).replace(".", ",")), el("div", { class: "delta" }, `${n(r.nb_avis_google)} avis`)),
-  );
+  // Indicateurs propres à l'activité de la marque (restaurant, e-commerce…).
+  const LABELS_EXTRA = { couverts_semaine: "Couverts / semaine", mardi: "Mardi soir", mercredi: "Mercredi soir", samedi: "Samedi", note_google: "Note Google", nb_avis_google: "Avis Google", commandes_semaine: "Commandes / semaine", panier_moyen: "Panier moyen (€)", taux_conversion_site: "Conversion du site (%)" };
+  const extra = Object.entries(s.restaurant || s.ventes || {});
+  $("#stats-extra").replaceChildren(...extra.map(([k, v]) =>
+    el("div", { class: "tile" }, el("div", { class: "label" }, LABELS_EXTRA[k] || k.replace(/_/g, " ")), el("div", { class: "value" }, String(v).replace(".", ",")))));
 }
 
 // ---------------------------------------------------------------- Profil
@@ -661,6 +746,7 @@ const PROFILE_FIELDS = [
   ["prenom", "Prénom"], ["appellation", "Comment Jurgenita vous appelle"], ["marque", "Marque"],
   ["activite", "Activité"], ["niche", "Niche"], ["ton_de_marque", "Ton de marque"],
   ["plateformes", "Plateformes (une par ligne)"], ["objectifs", "Objectifs (un par ligne)"], ["regles", "Règles à respecter (une par ligne)"],
+  ["concurrents", "Concurrents à surveiller (un par ligne)"], ["mots_cles_veille", "Mots-clés de veille (un par ligne)"],
   ["heure_reveil", "Heure de réveil"],
 ];
 
@@ -671,9 +757,11 @@ async function renderProfile() {
   form.replaceChildren(...PROFILE_FIELDS.map(([k, label]) =>
     el("label", {}, label, Array.isArray(p[k])
       ? el("textarea", { name: k, rows: Math.max(3, p[k].length + 1) }, p[k].join("\n"))
+      : ["concurrents", "mots_cles_veille", "plateformes", "objectifs", "regles"].includes(k) ? el("textarea", { name: k, rows: 3 }, "")
       : el("input", { name: k, value: p[k] ?? "", type: k === "heure_reveil" ? "time" : "text" }))),
     el("button", { class: "btn primary", type: "submit" }, "Enregistrer"));
   renderConnections();
+  renderBrandsAdmin();
   $("#notes").replaceChildren(...(notes.length
     ? notes.map((x) => el("li", {}, x.note, el("div", { class: "date" }, fmtDate(x.date))))
     : [el("li", { class: "muted" }, "Rien pour l'instant. Dites par exemple « Retiens que je ne tourne jamais le lundi ».")]));
@@ -712,7 +800,12 @@ function renderConnections() {
       c.gmail.connecte
         ? el("button", { class: "btn small danger", style: "margin:0", onclick: async () => { await api("/api/google/disconnect", {}); c.gmail.connecte = false; renderConnections(); toast("Google déconnecté"); } }, "Déconnecter")
         : c.gmail.configure ? el("a", { class: "btn small primary", href: "/auth/google" }, "Connecter mon compte Google") : null),
-    line("Instagram + Facebook", c.meta.configure, c.meta.configure ? "Commentaires et statistiques en direct. Les réponses peuvent être publiées depuis l'onglet Communauté." : "Ajoutez META_ACCESS_TOKEN et META_IG_USER_ID / META_PAGE_ID dans .env (voir CONNEXIONS.md)."),
+    line("Avis Google", c.marque.google_business && c.gmail.avis_autorises,
+      !c.marque.google_business ? "Renseignez l'établissement Google de la marque ci-dessous." : c.gmail.avis_autorises ? "Avis lus et réponses publiées depuis l'onglet Communauté." : "Reconnectez votre compte Google pour autoriser les avis.",
+      c.marque.google_business && c.gmail.configure && !c.gmail.avis_autorises ? el("a", { class: "btn small primary", href: "/auth/google" }, "Reconnecter Google") : null),
+    line(`Instagram + Facebook (${currentBrandName()})`, c.marque.meta, c.marque.meta ? "Commentaires, messages privés, statistiques et publication programmée." : "Renseignez les accès Meta de la marque ci-dessous (voir CONNEXIONS.md)."),
+    line(`Meta Ads (${currentBrandName()})`, c.marque.meta_ads, c.marque.meta_ads ? "Performances des annonces en direct dans l'onglet Publicité." : "Ajoutez l'identifiant du compte publicitaire ci-dessous."),
+    line(`TikTok · LinkedIn (${currentBrandName()})`, c.marque.tiktok || c.marque.linkedin, [c.marque.tiktok ? "TikTok connecté" : "TikTok non connecté", c.marque.linkedin ? "LinkedIn connecté" : "LinkedIn non connecté"].join(" · ") + " (statistiques)."),
     line("Telegram", c.telegram.pret,
       c.telegram.pret ? `Briefing envoyé chaque jour à ${state.profile?.heure_reveil || "l'heure de réveil"}. Écrivez au bot pour parler à Jurgenita.` : c.telegram.configure ? "Envoyez un message à votre bot : il vous donnera votre TELEGRAM_CHAT_ID." : "Ajoutez TELEGRAM_BOT_TOKEN dans .env (voir CONNEXIONS.md).",
       c.telegram.pret ? el("button", { class: "btn small", onclick: async (e) => {
@@ -722,6 +815,65 @@ function renderConnections() {
       } }, "Envoyer le briefing maintenant") : null),
   );
 }
+
+const currentBrandName = () => state.brands.find((b) => b.id === state.brand)?.nom || "";
+
+const CONFIG_FIELDS = [
+  ["meta_token", "Meta : jeton d'accès de la page", true],
+  ["meta_ig_user_id", "Meta : identifiant du compte Instagram pro"],
+  ["meta_page_id", "Meta : identifiant de la page Facebook"],
+  ["meta_ad_account_id", "Meta Ads : identifiant du compte publicitaire (act_…)"],
+  ["google_business_location", "Avis Google : établissement (accounts/…/locations/…)"],
+  ["tiktok_token", "TikTok : jeton d'accès", true],
+  ["linkedin_token", "LinkedIn : jeton d'accès", true],
+  ["linkedin_org_id", "LinkedIn : identifiant de la page entreprise"],
+];
+
+function renderBrandsAdmin() {
+  $("#brands-list").replaceChildren(...state.brands.map((b) =>
+    el("li", {},
+      el("div", { class: "row" },
+        el("span", { class: "from" }, el("span", { class: "brand-swatch", style: `display:inline-block;margin-right:8px;background:${b.couleur}` }), b.nom, b.id === state.brand ? " (active)" : ""),
+        el("span", { class: "meta" },
+          b.id !== state.brand ? el("button", { class: "btn small", onclick: () => setBrand(b.id) }, "Activer") : null,
+          state.brands.length > 1 ? el("button", { class: "btn small danger", style: "margin:0", onclick: async () => {
+            if (!confirm(`Retirer la marque « ${b.nom} » de Jurgenita ? Ses accès enregistrés seront effacés.`)) return;
+            await api("/api/brands/delete", { id: b.id });
+            if (b.id === state.brand) state.brand = null;
+            await loadStatus();
+            renderProfile();
+          } }, "Retirer") : null)))));
+  const filled = state.connexions?.marque.champs_renseignes || [];
+  $("#brand-config").replaceChildren(
+    el("h3", { class: "sub", style: "margin-top:0" }, `Accès de la marque ${currentBrandName()}`),
+    el("p", { class: "muted" }, "Laissez un champ vide pour garder la valeur déjà enregistrée. Les jetons restent sur votre ordinateur (data/secrets/), jamais dans Git."),
+    ...CONFIG_FIELDS.map(([name, label, secret]) =>
+      el("label", {}, `${label}${filled.includes(name) ? " · ✓ enregistré" : ""}`,
+        el("input", { name, type: secret ? "password" : "text", placeholder: filled.includes(name) ? "•••••• (inchangé)" : "", autocomplete: "off" }))),
+    el("button", { class: "btn primary", type: "submit" }, "Enregistrer les accès"));
+}
+
+$("#brand-config").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const values = Object.fromEntries(CONFIG_FIELDS.map(([name]) => [name, e.currentTarget.elements[name].value]));
+  try {
+    await api("/api/brand/connexions", values, "PUT");
+    await loadStatus();
+    renderProfile();
+    toast("Accès enregistrés");
+  } catch (err) { toast(err.message); }
+});
+
+$("#brand-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try {
+    const b = await api("/api/brands", { nom: $("#brand-name").value });
+    $("#brand-name").value = "";
+    await setBrand(b.id);
+    show("profil");
+    toast(`Marque « ${b.nom} » créée : complétez son profil`);
+  } catch (err) { toast(err.message); }
+});
 
 function fillPlatformSelect() {
   $("#cal-plateforme").replaceChildren(...(state.profile?.plateformes || []).map((p) => el("option", {}, p)));
@@ -749,6 +901,185 @@ function initAlarm() {
       setTimeout(runBriefing, 1800);
     }
   }, 15000);
+}
+
+// ---------------------------------------------------------------- Publicité
+
+const euro = (x) => `${Number(x ?? 0).toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`;
+
+async function renderAds() {
+  const data = await api("/api/data/ads");
+  $("#ads-period").textContent = `${data.periode}${data.source === "réel" ? " · ● en direct" : " · démo"}`;
+  const head = ["Annonce", "Campagne", "Dépense", "Impressions", "Clics", "CTR", "CPC", "Conv.", "ROAS"];
+  $("#ads-table").className = "data-table";
+  $("#ads-table").replaceChildren(
+    el("thead", {}, el("tr", {}, head.map((h, i) => el("th", { class: i > 1 ? "num-cell" : null }, h)))),
+    el("tbody", {}, data.annonces.length
+      ? data.annonces.map((a) => el("tr", {},
+        el("td", {}, a.annonce), el("td", {}, a.campagne),
+        el("td", { class: "num-cell" }, euro(a.depense)),
+        el("td", { class: "num-cell" }, Number(a.impressions).toLocaleString("fr-FR")),
+        el("td", { class: "num-cell" }, Number(a.clics).toLocaleString("fr-FR")),
+        el("td", { class: `num-cell${a.ctr < 1 ? " over" : ""}` }, `${String(a.ctr).replace(".", ",")} %`),
+        el("td", { class: "num-cell" }, euro(a.cpc)),
+        el("td", { class: "num-cell" }, a.conversions),
+        el("td", { class: `num-cell${a.roas != null && a.roas < 1 ? " over" : ""}` }, a.roas == null ? "–" : String(a.roas).replace(".", ","))))
+      : [el("tr", {}, el("td", { colspan: head.length, class: "muted" }, "Aucune annonce. Connectez Meta Ads dans Profil, ou créez une campagne ci-dessous."))]));
+}
+
+$("#btn-ads-review").addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  setStatus("thinking", "J'analyse vos campagnes…");
+  $("#ads-review").replaceChildren(el("div", { class: "loading" }, "Analyse en cours…"));
+  try {
+    const r = await api("/api/ads/review", {});
+    fill($("#ads-review"),
+      el("p", { class: "panel summary", style: "margin-top:16px" }, r.synthese),
+      el("ul", { class: "list" }, r.decisions.map((d) => el("li", {},
+        el("div", { class: "row" }, el("b", {}, d.annonce), el("span", { class: `decision ${d.decision}` }, d.decision)),
+        el("div", { class: "subj", style: "white-space:normal" }, d.raison)))),
+      r.alertes.length ? el("div", { class: "panel tip", style: "margin-top:12px" }, el("h3", { class: "sub" }, "Alertes"), el("ul", {}, r.alertes.map((a) => el("li", {}, `⚠ ${a}`)))) : null,
+      el("div", { class: "panel", style: "margin-top:12px" }, el("h3", { class: "sub" }, "Prochains tests"), el("ul", {}, r.prochains_tests.map((t) => el("li", {}, t)))));
+    speak(r.synthese);
+    if (!state.voice) setStatus("idle", "Analyse terminée.");
+  } catch (err) { $("#ads-review").replaceChildren(); toast(err.message); setStatus("idle"); }
+  btn.disabled = false;
+});
+
+$("#ads-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = e.submitter;
+  btn.disabled = true;
+  setStatus("thinking", "Je prépare votre campagne…");
+  $("#ads-result").replaceChildren(el("div", { class: "loading" }, "Création de la campagne…"));
+  try {
+    const r = await api("/api/ads/generate", {
+      produit: $("#ads-produit").value,
+      objectif: $("#ads-objectif").value,
+      budget: $("#ads-budget").value,
+      audience: $("#ads-audience").value,
+      plateformes: $$("#ads-plateformes input:checked").map((i) => i.value),
+    });
+    renderAdPack(r);
+    speak(`Campagne prête. ${r.strategie}`);
+    if (!state.voice) setStatus("idle", "Campagne prête.");
+  } catch (err) { $("#ads-result").replaceChildren(el("p", { class: "panel" }, err.message)); setStatus("idle"); }
+  btn.disabled = false;
+});
+
+// Limites de Google Ads : 30 caractères pour un titre, 90 pour une description.
+function limited(text, max) {
+  return el("span", {}, text, " ", el("small", { class: text.length > max ? "over" : "muted" }, `(${text.length}/${max})`));
+}
+
+function renderAdPack(r) {
+  $("#ads-result").replaceChildren(
+    el("div", { class: "panel summary" }, el("b", {}, "Stratégie · "), r.strategie),
+    el("div", { class: "panel", style: "margin-bottom:14px" },
+      el("h3", { class: "sub" }, "Audiences"),
+      el("ul", { class: "list" }, r.audiences.map((a) => el("li", {}, el("b", {}, a.nom), el("div", { class: "subj", style: "white-space:normal" }, a.ciblage), el("div", { class: "muted", style: "font-size:13px" }, a.pourquoi))))),
+    el("div", { class: "posts" }, r.annonces.map((a) => {
+      const google = a.plateforme === "Google Ads";
+      const full = `${a.titre}\n\n${a.texte_principal}\n\n${a.description}\n\n${a.appel_a_l_action}`;
+      return el("article", { class: "panel post ad-card" },
+        el("h4", {}, `${a.plateforme} · Variante ${a.variante}`),
+        el("div", { class: "meta" }, el("span", { class: "tag plat" }, a.angle)),
+        el("p", { class: "hook" }, google ? limited(a.titre, 30) : a.titre),
+        el("p", { style: "white-space:pre-wrap" }, a.texte_principal),
+        el("p", { class: "muted" }, google ? limited(a.description, 90) : a.description),
+        el("dl", {}, el("dt", {}, "CTA"), el("dd", {}, a.appel_a_l_action), el("dt", {}, "Visuel"), el("dd", {}, a.visuel)),
+        el("button", { class: "btn small", style: "margin-top:10px", onclick: () => copy(full) }, "Copier l'annonce"));
+    })),
+    el("div", { class: "cols", style: "margin-top:14px" },
+      el("div", { class: "panel" }, el("h3", { class: "sub" }, "Test A/B"), el("p", {}, r.test_ab)),
+      el("div", { class: "panel" }, el("h3", { class: "sub" }, "Budget"), el("p", {}, r.repartition_budget)),
+      el("div", { class: "panel" }, el("h3", { class: "sub" }, "KPI à suivre"), el("ul", {}, r.kpi_a_suivre.map((k) => el("li", {}, k))))),
+  );
+}
+
+// ---------------------------------------------------------------- Veille
+
+function renderVeilleData(v) {
+  $("#veille-info").textContent = v.mise_a_jour ? `Dernière veille : ${fmtDate(v.mise_a_jour)}` : "Mentions de la marque, actualité des concurrents et tendances de la niche, cherchées sur le web.";
+  const link = (m) => (/^https?:\/\//.test(m.url || "") ? el("a", { href: m.url, target: "_blank", rel: "noopener noreferrer", style: "color:var(--cyan)" }, m.titre) : m.titre);
+  fill($("#veille-result"),
+    v.alerte ? el("div", { class: "panel tip", style: "border-left-color:var(--red);margin-bottom:14px" }, el("b", {}, "⚠ Alerte · "), v.alerte) : null,
+    el("div", { class: "panel", style: "margin-bottom:14px" },
+      el("h3", { class: "sub" }, "Mentions de la marque"),
+      el("ul", { class: "list" }, v.mentions.length ? v.mentions.map((m) => el("li", {},
+        el("div", { class: "row" }, el("span", { class: "from" }, m.source), tag(m.sentiment)),
+        el("div", { style: "margin-top:4px" }, link(m))))
+        : [el("li", { class: "muted" }, "Aucune mention pour l'instant. Lancez la veille.")])),
+    el("div", { class: "cols" },
+      el("div", { class: "panel" }, el("h3", { class: "sub" }, "Concurrents"),
+        el("ul", { class: "list" }, v.concurrents.map((c) => el("li", {}, el("b", {}, c.nom), el("div", { class: "subj", style: "white-space:normal" }, c.activite))))),
+      el("div", { class: "panel" }, el("h3", { class: "sub" }, "Tendances"), el("ul", {}, v.tendances.map((t) => el("li", {}, t))),
+        v.opportunites?.length ? [el("h3", { class: "sub" }, "Opportunités"), el("ul", {}, v.opportunites.map((o) => el("li", {}, o)))] : null)),
+  );
+}
+
+async function renderVeille() {
+  renderVeilleData(await api("/api/data/veille"));
+}
+
+$("#btn-veille").addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  setStatus("thinking", "Je fais le tour du web…");
+  $("#veille-result").replaceChildren(el("div", { class: "loading" }, "Veille en cours (cela peut prendre une minute)…"));
+  try {
+    const v = await api("/api/veille", {});
+    renderVeilleData(v);
+    speak(v.alerte || `Veille terminée : ${v.mentions.length} mentions et ${v.tendances.length} tendances.`);
+    if (!state.voice) setStatus("idle", "Veille terminée.");
+  } catch (err) { toast(err.message); setStatus("idle"); renderVeille(); }
+  btn.disabled = false;
+});
+
+// ---------------------------------------------------------------- Marques
+
+async function loadStatus() {
+  let status;
+  try {
+    status = await api("/api/status");
+  } catch (err) {
+    // Marque enregistrée qui n'existe plus : on revient à la marque par défaut.
+    if (!state.brand) throw err;
+    state.brand = null;
+    status = await api("/api/status");
+  }
+  state.brand = status.marque;
+  storage("jurgenita.brand", state.brand);
+  state.brands = status.marques;
+  state.profile = status.profil;
+  state.connexions = status.connexions;
+  state.mode = status.mode;
+  state.modele = status.modele;
+  const badge = $("#mode");
+  badge.textContent = status.mode === "live" ? "En ligne" : "Démo";
+  badge.title = status.mode === "live" ? status.modele : "Ajoutez une clé API pour le mode réel";
+  badge.classList.toggle("demo", status.mode !== "live");
+  $("#brand-select").replaceChildren(...state.brands.map((b) => el("option", { value: b.id, selected: b.id === state.brand }, b.nom)));
+  $("#brand-swatch").style.background = state.brands.find((b) => b.id === state.brand)?.couleur || "";
+  renderStudioChips();
+  fillPlatformSelect();
+}
+
+async function setBrand(id) {
+  state.brand = id;
+  state.briefing = null;
+  state.triage = null;
+  $("#briefing").replaceChildren();
+  $("#studio-result").replaceChildren();
+  $("#ads-result").replaceChildren();
+  $("#ads-review").replaceChildren();
+  $("#community-summary").classList.add("hidden");
+  $("#community-ideas").replaceChildren();
+  $("#cal-editor").classList.add("hidden");
+  await loadStatus();
+  show($(".view.active")?.id.replace("view-", "") || "reveil");
+  toast(`Marque active : ${currentBrandName()}`);
 }
 
 // ---------------------------------------------------------------- Démarrage
@@ -804,21 +1135,12 @@ async function boot() {
     }
   });
 
+  $("#brand-select").addEventListener("change", (e) => setBrand(e.target.value));
   try {
-    const status = await api("/api/status");
-    state.profile = status.profil;
-    state.connexions = status.connexions;
-    state.mode = status.mode;
-    state.modele = status.modele;
-    const badge = $("#mode");
-    badge.textContent = status.mode === "live" ? "En ligne" : "Démo";
-    badge.title = status.mode === "live" ? status.modele : "Ajoutez une clé API pour le mode réel";
-    badge.classList.toggle("demo", status.mode !== "live");
+    await loadStatus();
   } catch {
     $("#mode").textContent = "Hors ligne";
   }
-  renderStudioChips();
-  fillPlatformSelect();
   $("#cal-date").value = tomorrow();
   initAlarm();
   initVision();

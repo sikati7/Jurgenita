@@ -1,0 +1,11 @@
+{
+  "periode": "7 derniers jours",
+  "plateformes": {
+    "Instagram": {"abonnes": 22800, "evolution_abonnes": 540, "portee": 98000, "taux_engagement": 4.6, "meilleur_post": "Reel — Collection Kente Lumière (54k vues)", "pire_post": "Photo produit fond blanc"},
+    "TikTok": {"abonnes": 15100, "evolution_abonnes": 1210, "vues": 310000, "taux_engagement": 6.8, "meilleur_post": "Coulisses de l'atelier d'Abidjan (140k vues)", "pire_post": "Unboxing"},
+    "Facebook": {"abonnes": 6400, "evolution_abonnes": 30, "portee": 11000, "taux_engagement": 1.7, "meilleur_post": "Lookbook automne", "pire_post": "Lien e-shop"},
+    "LinkedIn": {"abonnes": 3100, "evolution_abonnes": 140, "portee": 21000, "taux_engagement": 5.2, "meilleur_post": "Notre modèle de production équitable", "pire_post": "Offre de stage"}
+  },
+  "heures_fortes": {"Instagram": "12h-13h et 20h-22h", "TikTok": "19h-23h", "Facebook": "12h-14h", "LinkedIn": "8h-10h (mardi, mercredi)"},
+  "ventes": {"commandes_semaine": 86, "panier_moyen": 74, "taux_conversion_site": 1.9}
+}
