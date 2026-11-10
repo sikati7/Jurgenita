@@ -31,31 +31,32 @@ export function addSecretSource(fn) {
   sources.add(fn);
 }
 
-// Vrai pendant la collecte des secrets : si une source écrit elle-même dans le
-// journal, ce message est masqué par motifs seulement, sans relancer la collecte.
-let collecting = false;
+// Les plus longues d'abord, pour qu'un secret contenu dans un autre soit bien masqué.
+const byLength = (values) => [...values].sort((a, b) => b.length - a.length);
 
+// Dernière liste complète de secrets, et secrets trouvés pendant la collecte en cours.
+let lastKnown = [];
+let collecting = null;
+
+// Si une source écrit elle-même dans le journal pendant la collecte, ce message
+// est masqué avec la dernière liste connue et ce qui a déjà été trouvé, sans
+// relancer la collecte (ce qui créerait une boucle infinie).
 function knownSecrets() {
-  if (collecting) return [];
-  collecting = true;
+  if (collecting) return byLength(new Set([...lastKnown, ...collecting]));
+  collecting = new Set();
   try {
-    return collectSecrets();
-  } finally {
-    collecting = false;
-  }
-}
-
-function collectSecrets() {
-  const values = new Set();
-  for (const fn of sources) {
-    try {
-      for (const v of fn() || []) if (typeof v === "string" && v.length >= MIN_SECRET_LENGTH) values.add(v);
-    } catch {
-      // une source illisible ne doit jamais empêcher d'écrire un journal
+    for (const fn of sources) {
+      try {
+        for (const v of fn() || []) if (typeof v === "string" && v.length >= MIN_SECRET_LENGTH) collecting.add(v);
+      } catch {
+        // une source illisible ne doit jamais empêcher d'écrire un journal
+      }
     }
+    lastKnown = byLength(collecting);
+    return lastKnown;
+  } finally {
+    collecting = null;
   }
-  // Les plus longues d'abord, pour qu'un secret contenu dans un autre soit bien masqué.
-  return [...values].sort((a, b) => b.length - a.length);
 }
 
 export function redact(text) {

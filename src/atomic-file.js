@@ -21,12 +21,44 @@ import { randomBytes } from "node:crypto";
 
 export const TEMP_SUFFIX = ".tmp-jurgenita";
 
+// Fichier illisible. L'erreur ne garde QUE des informations sans contenu
+// (catégorie, code système, position, taille) : le message brut d'une erreur
+// de lecture JSON recopie un extrait du fichier, donc parfois d'un secret.
+// L'erreur d'origine n'est volontairement pas conservée (pas de « cause »),
+// pour qu'aucun affichage complet de l'erreur ne puisse la révéler.
 export class UnreadableFileError extends Error {
-  constructor(file, cause) {
+  constructor(file, diagnostic) {
     super(`Fichier illisible : ${path.basename(file)}`);
     this.name = "UnreadableFileError";
     this.file = file;
-    this.cause = cause;
+    this.diagnostic = diagnostic;
+  }
+}
+
+const typeOf = (v) => (v === null ? "null" : Array.isArray(v) ? "tableau" : typeof v);
+
+// Diagnostic d'une erreur JSON : on n'en garde que les nombres.
+function jsonDiagnostic(err, text) {
+  const position = /position (\d+)/.exec(err.message)?.[1];
+  const lineCol = /line (\d+) column (\d+)/.exec(err.message);
+  return {
+    categorie: text.trim() === "" ? "fichier_vide" : "json_invalide",
+    ...(position !== undefined && { position: Number(position) }),
+    ...(lineCol && { ligne: Number(lineCol[1]), colonne: Number(lineCol[2]) }),
+    taille: Buffer.byteLength(text),
+  };
+}
+
+// Phrase de diagnostic pour le journal, sans aucun contenu du fichier.
+export function describeUnreadable(erreur) {
+  const d = erreur?.diagnostic || {};
+  const size = d.taille !== undefined ? `, ${d.taille} octets` : "";
+  switch (d.categorie) {
+    case "fichier_vide": return `fichier vide${size}`;
+    case "json_invalide": return `JSON invalide${d.position !== undefined ? `, position ${d.position}` : ""}${d.ligne ? ` (ligne ${d.ligne}, colonne ${d.colonne})` : ""}${size}`;
+    case "pas_un_objet": return `le contenu n'est pas un objet JSON (${d.type})${size}`;
+    case "lecture_impossible": return `lecture impossible (${d.code || "erreur inconnue"})`;
+    default: return "raison inconnue";
   }
 }
 
@@ -37,17 +69,18 @@ export function readJsonFile(file, { fsImpl = fs } = {}) {
     text = fsImpl.readFileSync(file, "utf8");
   } catch (err) {
     if (err.code === "ENOENT") return { etat: "absent" };
-    return { etat: "illisible", erreur: new UnreadableFileError(file, err) };
+    return { etat: "illisible", erreur: new UnreadableFileError(file, { categorie: "lecture_impossible", code: String(err.code || "") }) };
   }
+  let valeur;
   try {
-    const valeur = JSON.parse(text);
-    if (valeur === null || typeof valeur !== "object" || Array.isArray(valeur)) {
-      return { etat: "illisible", erreur: new UnreadableFileError(file, new Error("le contenu n'est pas un objet JSON")) };
-    }
-    return { etat: "ok", valeur };
+    valeur = JSON.parse(text);
   } catch (err) {
-    return { etat: "illisible", erreur: new UnreadableFileError(file, err) };
+    return { etat: "illisible", erreur: new UnreadableFileError(file, jsonDiagnostic(err, text)) };
   }
+  if (valeur === null || typeof valeur !== "object" || Array.isArray(valeur)) {
+    return { etat: "illisible", erreur: new UnreadableFileError(file, { categorie: "pas_un_objet", type: typeOf(valeur), taille: Buffer.byteLength(text) }) };
+  }
+  return { etat: "ok", valeur };
 }
 
 // Sous Windows, un antivirus ou l'indexation peut verrouiller brièvement un

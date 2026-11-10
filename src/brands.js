@@ -6,7 +6,7 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import * as store from "./store.js";
-import { readJsonFile, writeJsonAtomic, leftoverTemps } from "./atomic-file.js";
+import { readJsonFile, writeJsonAtomic, leftoverTemps, describeUnreadable } from "./atomic-file.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SECRETS_DIR = path.join(process.env.JURGENITA_SECRETS_DIR || path.join(here, "..", "data", "secrets"), "brands");
@@ -78,7 +78,8 @@ function secretsState(id) {
   if (result.etat === "illisible") {
     if (!reported.has(id)) {
       reported.add(id);
-      console.error(`[accès] ${result.erreur.message} (marque ${id}) :`, result.erreur.cause?.message);
+      // Jamais le message brut de l'erreur : seulement un diagnostic sans contenu.
+      console.error(`[accès] ${result.erreur.message} (marque ${id}) : ${describeUnreadable(result.erreur)}`);
     }
     return { etat: "illisible", valeurs: {} };
   }
