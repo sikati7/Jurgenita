@@ -7,9 +7,24 @@ import { randomUUID, randomBytes } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import * as redaction from "./src/redact.js";
 import { createStateStore } from "./src/oauth-states.js";
+import { safeForLog } from "./src/safe-error.js";
 
 // Les journaux masquent les secrets dès le démarrage, quel que soit le module qui écrit.
 redaction.installConsoleRedaction();
+
+// Une vraie erreur fatale (non rattrapée) : journalisée de façon sûre — sans
+// extrait de fichier ni propriétés brutes, et masquée — puis arrêt propre avec
+// le code 1, plutôt que de continuer dans un état incohérent. L'écriture est
+// synchrone pour que le message ne soit pas perdu par l'arrêt (Windows).
+function fatal(kind) {
+  return (err) => {
+    try { fs.writeSync(2, `${redaction.redact(`[fatal] ${kind} : ${safeForLog(err)}`)}\n`); }
+    catch { /* rien de plus à faire : on s'arrête quand même */ }
+    process.exit(1);
+  };
+}
+process.on("uncaughtException", fatal("erreur non rattrapée"));
+process.on("unhandledRejection", fatal("promesse rejetée non rattrapée"));
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 if (fs.existsSync(path.join(here, ".env"))) process.loadEnvFile(path.join(here, ".env"));
@@ -198,7 +213,7 @@ const routes = {
   "POST /api/community/publish": async (body, brand) => {
     if (!body.message?.trim()) throw fail(400, "Réponse vide");
     if (body.reseau === "google") {
-      if (!google.hasBusinessScope()) throw fail(400, "Avis Google non connectés");
+      if (!sources.googleState().avis_autorises) throw fail(400, "Avis Google non connectés (reconnectez Google depuis Profil → Connexions)");
       await google.replyReview(body.ref, body.message);
       return { ok: true };
     }
@@ -234,7 +249,7 @@ const routes = {
   "POST /api/drafts": async (body, brand) => {
     const draft = store.append("drafts", { ...body, marque: brand, cree: new Date().toISOString() });
     // Si Gmail est connecté, le brouillon d'un mail est aussi créé dans Gmail.
-    if (body.canal === "email" && google.connected()) {
+    if (body.canal === "email" && sources.googleState().connecte) {
       await google.createDraft({ to: body.destinataire, subject: body.objet, body: body.texte, threadId: body.threadId, inReplyTo: body.messageId });
       return { ...draft, gmail: true };
     }
@@ -345,7 +360,7 @@ const server = http.createServer(async (req, res) => {
     send(res, 200, await handler(body, brand));
   } catch (err) {
     const pub = publicError(err);
-    if (pub.log) console.error(`[${req.method} ${url.pathname}]${pub.ref ? ` réf. ${pub.ref}` : ""}`, err);
+    if (pub.log) console.error(`[${req.method} ${url.pathname}]${pub.ref ? ` réf. ${pub.ref}` : ""} ${safeForLog(err)}`);
     if (!res.headersSent) send(res, pub.status, { erreur: pub.erreur });
   }
 });
@@ -356,7 +371,7 @@ server.listen(PORT, HOST, () => {
   console.log(`\n  ◉ JURGENITA en ligne — http://${HOST}:${server.address().port}`);
   console.log(LIVE ? `    Cerveau : ${brain.MODEL}` : "    Cerveau : mode démo (ajoutez ANTHROPIC_API_KEY dans .env)");
   console.log(`    Marques : ${brands.list().map((b) => b.nom).join(", ")}`);
-  console.log(`    Gmail : ${c.gmail.connecte ? "connecté" : c.gmail.configure ? "à connecter depuis le Profil" : "non configuré"}`);
+  console.log(`    Gmail : ${c.gmail.connecte ? "connecté" : c.gmail.reconnexion ? "à reconnecter (jeton Google illisible, voir Profil → Connexions)" : c.gmail.configure ? "à connecter depuis le Profil" : "non configuré"}`);
   console.log(`    Telegram : ${telegram.ready() ? "prêt" : telegram.configured() ? "envoyez un message au bot pour obtenir TELEGRAM_CHAT_ID" : "non configuré"}\n`);
   const health = brands.secretsHealth();
   if (health.illisibles.length) {

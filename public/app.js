@@ -799,16 +799,20 @@ $("#btn-reset").addEventListener("click", async () => {
 function renderConnections() {
   const c = state.connexions;
   if (!c) return;
-  const line = (name, ok, detail, action) =>
-    el("li", {}, el("div", { class: "row" }, el("b", {}, name), el("span", { class: `tag ${ok ? "positif" : "a_ignorer"}` }, ok ? "Connecté" : "Non connecté")),
+  // `label` remplace « Non connecté » quand il faut agir (ex. « À reconnecter »).
+  const line = (name, ok, detail, action, label) =>
+    el("li", {}, el("div", { class: "row" }, el("b", {}, name), el("span", { class: `tag ${ok ? "positif" : label ? "negatif" : "a_ignorer"}` }, ok ? "Connecté" : label || "Non connecté")),
       el("div", { class: "subj", style: "white-space:normal" }, detail), action ? el("div", { style: "margin-top:8px" }, action) : null);
   fill($("#connexions"),
     line("Cerveau (API Claude)", state.mode === "live", state.mode === "live" ? `Modèle ${state.modele}` : "Mode démo : ajoutez ANTHROPIC_API_KEY dans .env puis relancez."),
     line("Gmail + Google Agenda", c.gmail.connecte,
-      c.gmail.connecte ? "Jurgenita lit vos mails des 3 derniers jours et votre agenda, et crée les brouillons dans Gmail." : c.gmail.configure ? "Identifiants Google présents : il reste à autoriser l'accès." : "Ajoutez GOOGLE_CLIENT_ID et GOOGLE_CLIENT_SECRET dans .env (voir CONNEXIONS.md).",
+      c.gmail.connecte ? "Jurgenita lit vos mails des 3 derniers jours et votre agenda, et crée les brouillons dans Gmail."
+        : c.gmail.reconnexion ? "Le jeton Google enregistré est illisible (fichier abîmé ou incomplet). En attendant, Jurgenita affiche les mails et l'agenda de démonstration. Reconnectez votre compte Google pour rétablir l'accès."
+        : c.gmail.configure ? "Identifiants Google présents : il reste à autoriser l'accès." : "Ajoutez GOOGLE_CLIENT_ID et GOOGLE_CLIENT_SECRET dans .env (voir CONNEXIONS.md).",
       c.gmail.connecte
         ? el("button", { class: "btn small danger", style: "margin:0", onclick: async () => { await api("/api/google/disconnect", {}); c.gmail.connecte = false; renderConnections(); toast("Google déconnecté"); } }, "Déconnecter")
-        : c.gmail.configure ? el("a", { class: "btn small primary", href: "/auth/google" }, "Connecter mon compte Google") : null),
+        : c.gmail.configure ? el("a", { class: "btn small primary", href: "/auth/google" }, c.gmail.reconnexion ? "Reconnecter mon compte Google" : "Connecter mon compte Google") : null,
+      c.gmail.reconnexion ? "À reconnecter" : null),
     line("Avis Google", c.marque.google_business && c.gmail.avis_autorises,
       !c.marque.google_business ? "Renseignez l'établissement Google de la marque ci-dessous." : c.gmail.avis_autorises ? "Avis lus et réponses publiées depuis l'onglet Communauté." : "Reconnectez votre compte Google pour autoriser les avis.",
       c.marque.google_business && c.gmail.configure && !c.gmail.avis_autorises ? el("a", { class: "btn small primary", href: "/auth/google" }, "Reconnecter Google") : null),

@@ -1,30 +1,81 @@
 // Sources de données : les vrais comptes quand ils sont connectés, sinon les
 // données de démo de data/. Une source qui échoue retombe sur la démo.
 // La boîte mail et l'agenda sont les vôtres ; le reste est propre à chaque marque.
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import * as store from "./store.js";
 import * as brands from "./brands.js";
 import * as google from "./connectors/google.js";
 import * as meta from "./connectors/meta.js";
 import * as tiktok from "./connectors/tiktok.js";
 import * as linkedin from "./connectors/linkedin.js";
+import * as redaction from "./redact.js";
+import { readJsonFile, describeUnreadable } from "./atomic-file.js";
+import { safeMessage } from "./safe-error.js";
 
 async function tryLive(name, live, fallback) {
   try {
     return await live();
   } catch (err) {
-    console.error(`[${name}] repli sur la démo :`, err.message);
+    console.error(`[${name}] repli sur la démo : ${safeMessage(err)}`);
     return fallback();
   }
 }
 
-export const inbox = () => (google.connected() ? tryLive("gmail", () => google.inbox(), () => store.read("inbox")) : store.read("inbox"));
-export const agenda = () => (google.connected() ? tryLive("agenda", () => google.agenda(), () => store.read("agenda")) : store.read("agenda"));
+// État du jeton Google, lu prudemment ICI plutôt que par google.js (qui le lit
+// sans protection) : un jeton vide, tronqué ou invalide ne doit ni arrêter le
+// serveur, ni apparaître dans un journal. Il est alors considéré comme « à
+// reconnecter » ; le fichier n'est jamais modifié ni supprimé ici.
+// Même emplacement que dans google.js.
+const here = path.dirname(fileURLToPath(import.meta.url));
+const TOKEN_FILE = path.join(process.env.JURGENITA_SECRETS_DIR || path.join(here, "..", "data", "secrets"), "google-token.json");
+
+let reportedProblem = null; // pour ne signaler un même problème qu'une fois
+
+function readGoogleToken() {
+  const result = readJsonFile(TOKEN_FILE);
+  if (result.etat === "absent") return { etat: "absent" };
+  let probleme = null;
+  if (result.etat === "illisible") probleme = describeUnreadable(result.erreur);
+  else if (typeof result.valeur.refresh_token !== "string" || !result.valeur.refresh_token.trim()) probleme = "jeton de renouvellement absent ou vide";
+  if (!probleme) {
+    reportedProblem = null;
+    const scope = typeof result.valeur.scope === "string" ? result.valeur.scope : "";
+    return { etat: "ok", scope };
+  }
+  if (probleme !== reportedProblem) {
+    reportedProblem = probleme;
+    console.warn(`[google] Jeton Google illisible (${probleme}) : connexion Google suspendue, reconnectez Google depuis Profil → Connexions.`);
+  }
+  return { etat: "illisible" };
+}
+
+// Le jeton, s'il est lisible, est aussi masqué dans tous les journaux.
+redaction.addSecretSource(() => {
+  const token = readJsonFile(TOKEN_FILE);
+  return token.etat === "ok" && typeof token.valeur.refresh_token === "string" ? [token.valeur.refresh_token] : [];
+});
+
+export function googleState() {
+  const configure = google.configured();
+  const token = configure ? readGoogleToken() : { etat: "absent" };
+  const connecte = token.etat === "ok";
+  return {
+    configure,
+    connecte,
+    avis_autorises: connecte && token.scope.includes("business.manage"),
+    reconnexion: token.etat === "illisible",
+  };
+}
+
+export const inbox = () => (googleState().connecte ? tryLive("gmail", () => google.inbox(), () => store.read("inbox")) : store.read("inbox"));
+export const agenda = () => (googleState().connecte ? tryLive("agenda", () => google.agenda(), () => store.read("agenda")) : store.read("agenda"));
 
 export async function community(brand) {
   const cfg = brands.config(brand);
   const live = [];
   if (meta.configured(cfg.meta)) live.push(tryLive("meta", () => meta.community(cfg.meta), () => null));
-  if (cfg.googleBusinessLocation && google.hasBusinessScope()) {
+  if (cfg.googleBusinessLocation && googleState().avis_autorises) {
     live.push(tryLive("avis-google", () => google.reviews(cfg.googleBusinessLocation), () => null));
   }
   if (!live.length) return store.read("community", brand);
@@ -97,6 +148,6 @@ export async function snapshot(brand) {
 }
 
 export const connections = (brand) => ({
-  gmail: { configure: google.configured(), connecte: google.connected(), avis_autorises: google.hasBusinessScope() },
+  gmail: googleState(),
   marque: brands.connectionStatus(brand),
 });
