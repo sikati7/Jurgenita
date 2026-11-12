@@ -36,7 +36,3 @@ test("Windows : l'écriture atomique remplace un fichier existant sur NTFS", onl
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
-
-test("TÉMOIN TEMPORAIRE : doit échouer sous Windows", onlyWindows, () => {
-  assert.fail("Témoin : ce test prouve que les tests propres à Windows s'exécutent réellement. Il sera retiré.");
-});
