@@ -8,11 +8,14 @@ import http from "node:http";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { redact, addSecretSource } from "../src/redact.js";
 import { createStateStore } from "../src/oauth-states.js";
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+// Adresse file:// d'un module de src/, utilisable dans import() sous Windows comme ailleurs
+// (un chemin absolu « C:\… » y est refusé).
+const srcUrl = (...parts) => pathToFileURL(path.join(root, "src", ...parts)).href;
 const runtimeDir = fs.mkdtempSync(path.join(os.tmpdir(), "jurgenita-etape1-"));
 const secretsDir = fs.mkdtempSync(path.join(os.tmpdir(), "jurgenita-etape1-secrets-"));
 // Secrets factices : ils ne doivent jamais apparaître dans un journal ni une réponse.
@@ -186,7 +189,7 @@ test("les valeurs exactes des secrets configurés sont masquées, sans toucher a
 
 test("le masquage s'applique à tout console.* du serveur, objets et erreurs compris", () => {
   const script = `
-    import { installConsoleRedaction, addSecretSource } from ${JSON.stringify(path.join(root, "src", "redact.js"))};
+    import { installConsoleRedaction, addSecretSource } from ${JSON.stringify(srcUrl("redact.js"))};
     installConsoleRedaction();
     addSecretSource(() => ["valeur-secrete-de-test"]);
     console.error("[meta]", new Error("échec https://x/?access_token=EAAsecretdanserreur123456789"));

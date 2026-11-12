@@ -10,10 +10,13 @@ import util from "node:util";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { readJsonFile } from "../src/atomic-file.js";
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+// Adresse file:// d'un module de src/, utilisable dans import() sous Windows comme ailleurs
+// (un chemin absolu « C:\… » y est refusé).
+const srcUrl = (...parts) => pathToFileURL(path.join(root, "src", ...parts)).href;
 const dirs = [];
 const newDir = (name) => { const d = fs.mkdtempSync(path.join(os.tmpdir(), `jurgenita-journaux-${name}-`)); dirs.push(d); return d; };
 after(() => dirs.forEach((d) => fs.rmSync(d, { recursive: true, force: true })));
@@ -59,9 +62,9 @@ function runWithBrokenBrands(contents) {
   fs.writeFileSync(path.join(runtime, "brands.json"), JSON.stringify(ids.map((id) => ({ id, nom: id, couleur: "#000" }))));
   contents.forEach((c, i) => fs.writeFileSync(path.join(secrets, "brands", `${ids[i]}.json`), c));
   const script = `
-    import * as redaction from ${JSON.stringify(path.join(root, "src", "redact.js"))};
+    import * as redaction from ${JSON.stringify(srcUrl("redact.js"))};
     redaction.installConsoleRedaction();
-    const brands = await import(${JSON.stringify(path.join(root, "src", "brands.js"))});
+    const brands = await import(${JSON.stringify(srcUrl("brands.js"))});
     redaction.addSecretSource(() => brands.list().flatMap((b) => { const c = brands.config(b.id); return [c.meta.token, c.tiktok.token, c.linkedin.token]; }));
     for (const b of brands.list()) brands.connectionStatus(b.id);
     try { brands.saveConfig(brands.list()[0].id, { meta_token: "x" }); } catch (e) { console.error("refus :", e); }
@@ -116,7 +119,7 @@ test("l'erreur de lecture elle-même ne transporte aucun extrait (même affiché
 // qui écrivent elles-mêmes dans le journal pendant la collecte.
 function runCollection(body) {
   const script = `
-    import * as redaction from ${JSON.stringify(path.join(root, "src", "redact.js"))};
+    import * as redaction from ${JSON.stringify(srcUrl("redact.js"))};
     redaction.installConsoleRedaction();
     ${body}`;
   const started = Date.now();

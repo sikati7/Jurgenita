@@ -9,10 +9,13 @@ import http from "node:http";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { readJsonFile, writeJsonAtomic, leftoverTemps, TEMP_SUFFIX } from "../src/atomic-file.js";
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+// Adresse file:// d'un module de src/, utilisable dans import() sous Windows comme ailleurs
+// (un chemin absolu « C:\… » y est refusé).
+const srcUrl = (...parts) => pathToFileURL(path.join(root, "src", ...parts)).href;
 const tmp = (name) => fs.mkdtempSync(path.join(os.tmpdir(), `jurgenita-2a-${name}-`));
 const dirs = [];
 const newDir = (name) => { const d = tmp(name); dirs.push(d); return d; };
@@ -90,7 +93,7 @@ test("arrêt forcé pendant des écritures : le fichier contient toujours une ve
   const versionB = { meta_token: "B".repeat(5000), version: "B" };
   writeJsonAtomic(file, versionA);
   const script = `
-    import { writeJsonAtomic } from ${JSON.stringify(path.join(root, "src", "atomic-file.js"))};
+    import { writeJsonAtomic } from ${JSON.stringify(srcUrl("atomic-file.js"))};
     const a = ${JSON.stringify(versionA)}, b = ${JSON.stringify(versionB)};
     process.stdout.write("pret\\n");
     for (let i = 0; ; i++) writeJsonAtomic(${JSON.stringify(file)}, i % 2 ? a : b);
@@ -115,7 +118,7 @@ test("marques : un fichier illisible n'est jamais écrasé, les autres marques f
   const runtime = newDir("runtime");
   const secrets = newDir("secrets");
   const script = `
-    const brands = await import(${JSON.stringify(path.join(root, "src", "brands.js"))});
+    const brands = await import(${JSON.stringify(srcUrl("brands.js"))});
     const fs = await import("node:fs");
     const file = ${JSON.stringify(path.join(secrets, "brands", "kora.json"))};
     const out = {};

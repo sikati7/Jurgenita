@@ -2,17 +2,22 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "claude/**"]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: ${{ matrix.os }} · Node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
     strategy:
+      # Un échec sous un système n'interrompt pas les autres : on voit tout.
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest]
         node: [20, 22]
     steps:
       - uses: actions/checkout@v4
@@ -23,3 +28,12 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm test
+      # Garde-fou : sous Windows, les tests propres à Windows doivent avoir
+      # réellement tourné (aucun ignoré, au moins un réussi).
+      - name: Tests Windows réellement exécutés
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          node --test test/windows.test.js | tee windows-tests.txt
+          grep -q "^# skipped 0$" windows-tests.txt
+          grep -q "^# pass [1-9]" windows-tests.txt
