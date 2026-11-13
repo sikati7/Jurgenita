@@ -291,8 +291,16 @@ function lireAcl(p) {
     "ConvertTo-Json -Compress -Depth 4 -InputObject @{ sddl = $a.GetSecurityDescriptorSddlForm([System.Security.AccessControl.AccessControlSections]'Owner, Group, Access'); protegee = $a.AreAccessRulesProtected; proprietaire = $a.GetOwner($t).Value; regles = $r }",
   ].join("; "), { JG_P: p }));
 }
-// Propriétaire, protection et chaque entrée (explicite ou héritée), dans l'ordre.
-const etatAcl = (p) => { const a = lireAcl(p); return JSON.stringify({ proprietaire: a.proprietaire, protegee: a.protegee, regles: a.regles.map((x) => `${x.type}|${x.sid}|${x.droits}|${x.herite}|${x.heritage}|${x.propagation}`) }); };
+// Propriétaire, protection, entrées explicites dans l'ordre, entrées héritées
+// comme ensemble : Windows recalcule ces dernières à partir du dossier parent,
+// dans un ordre qu'aucune API standard ne fixe. L'ordre de règles qui ne font
+// qu'autoriser est sans effet sur les droits, et un arbre contenant une règle
+// de refus n'est jamais corrigé.
+const etatAcl = (p) => {
+  const a = lireAcl(p);
+  const r = (x) => `${x.type}|${x.sid}|${x.droits}|${x.heritage}|${x.propagation}`;
+  return JSON.stringify({ proprietaire: a.proprietaire, protegee: a.protegee, explicites: a.regles.filter((x) => !x.herite).map(r), herites: a.regles.filter((x) => x.herite).map(r).sort() });
+};
 const sidCourant = () => psSync("[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value").trim();
 function icacls(...args) {
   const r = spawnSync("icacls", args, { encoding: "utf8", windowsHide: true });
