@@ -420,6 +420,8 @@ test("Windows (simulé) : dossier sensible — toute règle de refus arrête (vo
 function modeleWindows(initial, jeton) {
   const etat = new Map(Object.entries(initial).map(([k, v]) => [k, structuredClone(v)]));
   const wp = path.win32;
+  let reordonner = false;
+  let restaure = false;
   const effectives = (p) => {
     const it = etat.get(p);
     const herites = [];
@@ -430,7 +432,8 @@ function modeleWindows(initial, jeton) {
         if (a.drapeaux & (it.dossier ? CI : OI)) herites.push({ ...a, drapeaux: (it.dossier ? a.drapeaux & (OI | CI) : 0) | ID });
       }
     }
-    return [...it.explicites, ...herites];
+    // Après une restauration, Windows peut recalculer les entrées héritées dans un autre ordre.
+    return [...it.explicites, ...(reordonner && restaure ? herites.reverse() : herites)];
   };
   const securite = (p) => ({ proprietaire: etat.get(p).proprietaire, protegee: etat.get(p).protegee, nulle: false, entrees: effectives(p), sddl: `JSON:${JSON.stringify({ protegee: etat.get(p).protegee, explicites: etat.get(p).explicites })}` });
   const journal = [];
@@ -447,7 +450,7 @@ function modeleWindows(initial, jeton) {
       if (panne(op)) { resultats.push({ ok: false, erreur: "PanneSimulee" }); break; }
       const it = etat.get(op.chemin);
       if (op.action === "proprietaire") it.proprietaire = op.sid;
-      else if (op.sddl.startsWith("JSON:")) Object.assign(it, JSON.parse(op.sddl.slice(5)));
+      else if (op.sddl.startsWith("JSON:")) { Object.assign(it, JSON.parse(op.sddl.slice(5))); restaure = true; }
       else if (op.sddl === win.SDDL_HERITAGE_SEUL) Object.assign(it, { protegee: false, explicites: [] });
       else Object.assign(it, { protegee: true, explicites: cible(jeton.utilisateur) });
       resultats.push({ ok: true });
@@ -455,7 +458,7 @@ function modeleWindows(initial, jeton) {
     return { ok: true, resultats };
   };
   const instantane = () => Object.fromEntries([...etat.keys()].map((k) => [k, securite(k)]));
-  return { ps, etat, journal, instantane, definirPanne: (f) => { panne = f; } };
+  return { ps, etat, journal, instantane, definirPanne: (f) => { panne = f; }, reordonnerApresRestauration: () => { reordonner = true; } };
 }
 const FS_NUL = { readdirSync: () => [], readFileSync: () => "", openSync: () => 1, closeSync: () => {}, unlinkSync: () => {} };
 function scenarioWindows() {
@@ -552,6 +555,89 @@ test("scripts PowerShell : aucun guillemet double, aucun accent grave, ASCII, ta
     assert.ok(script.length < 16000, nom);
   }
 });
+
+test("Windows (simulé) : échec de la sauvegarde → aucune opération appliquée, autorisations inchangées", async () => {
+  const { j, R, m } = scenarioWindows();
+  const origine = m.instantane();
+  const r = await win.protegerArbre({ racine: R, elements: await elementsDe(m, R), jeton: j, ps: m.ps, fsImpl: FS_NUL, sauvegarder: async () => { throw Object.assign(new Error("disque plein"), { code: "ENOSPC" }); } });
+  assert.equal(r.ok, false);
+  assert.equal(r.etape, "sauvegarde");
+  assert.deepEqual(m.journal, [], "aucune opération sur les autorisations");
+  const apres = m.instantane();
+  for (const k of Object.keys(origine)) assert.ok(win.memesDroits(apres[k], origine[k]), k);
+});
+
+test("Windows (simulé) : entrées héritées réordonnées par Windows après restauration → restauration validée, droits effectifs identiques", async () => {
+  const { j, R, m } = scenarioWindows();
+  const origine = m.instantane();
+  m.reordonnerApresRestauration();
+  m.definirPanne((op) => op.chemin === `${R}\\brands\\kora.json` && op.sddl === win.SDDL_HERITAGE_SEUL);
+  const r = await win.protegerArbre({ racine: R, elements: await elementsDe(m, R), jeton: j, ps: m.ps, fsImpl: FS_NUL });
+  assert.equal(r.restauration.etat, "restaure", JSON.stringify(r.restauration));
+  const apres = m.instantane();
+  const ordre = (sec) => sec.entrees.filter((x) => x.drapeaux & ID).map((x) => x.sid).join(",");
+  assert.notEqual(ordre(apres[R]), ordre(origine[R]), "l'ordre des entrées héritées a bien changé");
+  for (const k of Object.keys(origine)) {
+    assert.ok(win.memesDroits(apres[k], origine[k]), `${k} : mêmes entrées`);
+    assert.ok(win.memesDroitsEffectifs(apres[k], origine[k], j), `${k} : mêmes droits effectifs`);
+  }
+});
+
+test("droits effectifs comparés compte par compte : l'ordre des autorisations n'y change rien, une différence de droits si", () => {
+  const herites = [ace(0, U, DROIT.CONTROLE_TOTAL, ID), ace(0, SID.UTILISATEURS, 0x1200a9, ID), ace(0, SID.SYSTEME, DROIT.CONTROLE_TOTAL, ID)];
+  const sec = (entrees, proprietaire = U) => ({ proprietaire, protegee: false, nulle: false, entrees });
+  const j = jetonSimule();
+  assert.ok(win.memesDroitsEffectifs(sec(herites), sec([...herites].reverse()), j), "ordre différent, mêmes droits");
+  assert.ok(!win.memesDroitsEffectifs(sec(herites), sec(herites.slice(0, 2)), j), "un compte a perdu ses droits");
+  assert.ok(!win.memesDroitsEffectifs(sec(herites), sec([...herites, ace(0, SID.TOUT_LE_MONDE, 0x120089, ID)]), j), "un compte a gagné des droits");
+  assert.ok(!win.memesDroitsEffectifs(sec(herites), sec(herites, AUTRE), j), "propriétaire différent : droits implicites différents");
+  const refusAvant = [ace(1, U, DROIT.AJOUT_FICHIER), ace(0, U, DROIT.CONTROLE_TOTAL)];
+  assert.ok(!win.memesDroitsEffectifs(sec(refusAvant), sec([...refusAvant].reverse()), j), "un refus déplacé après l'autorisation change les droits");
+});
+
+test("sauvegarde : jamais écrasée — nom déjà pris = autre nom, sinon échec ; l'existante reste intacte ; aucun temporaire laissé", () => {
+  const d = base("ecriture");
+  const existante = path.join(d, "pris.json");
+  fs.writeFileSync(existante, "ORIGINAL");
+  const noms = ["pris", "libre"];
+  const f = sd.ecrireSauvegarde(d, "droits", (chemin) => ({ fichier: path.basename(chemin) }), { nommer: () => noms.shift() });
+  assert.equal(path.basename(f), "libre.json");
+  assert.deepEqual(JSON.parse(fs.readFileSync(f, "utf8")), { fichier: "libre.json" }, "le contenu porte son propre nom");
+  assert.equal(fs.readFileSync(existante, "utf8"), "ORIGINAL", "sauvegarde existante intacte");
+  if (posix) assert.equal(mode(f), 0o600);
+  assert.throws(() => sd.ecrireSauvegarde(d, "droits", () => ({}), { nommer: () => "pris" }), (e) => e.code === "EEXIST", "aucun nom libre : échec, jamais d'écrasement");
+  assert.throws(() => sd.ecrireSauvegarde(d, "droits", () => ({ a: 1 }), { nommer: () => "relu", fsImpl: { ...fs, readFileSync: () => "autre" } }), (e) => e.code === "EVERIF");
+  assert.equal(fs.readFileSync(existante, "utf8"), "ORIGINAL");
+  assert.deepEqual(fs.readdirSync(d).sort(), ["libre.json", "pris.json"], "aucun temporaire ni sauvegarde partielle");
+});
+
+test("sauvegarde altérée ou invalide : refusée avant toute restauration (chemins, types, droits, autorisations Windows incohérentes)", () => {
+  const posixOk = { version: 1, plateforme: "linux", racine: "/s", elements: [{ chemin: ".", type: "dossier", mode: "755" }, { chemin: "brands/kora.json", type: "fichier", mode: "644" }] };
+  const sec = { proprietaire: U, protegee: false, nulle: false, entrees: [ace(0, U, DROIT.CONTROLE_TOTAL, OI | CI | ID)], sddl: "O:S-1-5-21-1D:AI(A;OICIID;FA;;;S-1-5-21-1)" };
+  const winOk = { version: 1, plateforme: "win32", racine: "C:\\s", elements: [{ chemin: ".", type: "dossier", sddl: sec.sddl, securite: sec }, { chemin: "brands/kora.json", type: "fichier", sddl: sec.sddl, securite: sec }] };
+  const verifier = (b, plateforme = "linux", racine = "/s") => sd.validerSauvegarde(b, { racine, plateforme });
+  const v = verifier(posixOk);
+  assert.equal(v.ok, true, v.erreurs.join(" ; "));
+  assert.deepEqual(v.elements.map((e) => e.absolu), ["/s", "/s/brands/kora.json"]);
+  const altere = (modifier, plateforme, racine) => { const b = structuredClone(plateforme === "win32" ? winOk : posixOk); modifier(b); return verifier(b, plateforme, racine); };
+  for (const chemin of ["../hors", "/etc/passwd", "brands/../../hors", "a//b", "a/./b", "C:x", "a\\b", ""]) assert.equal(altere((b) => { b.elements[1].chemin = chemin; }).ok, false, `chemin ${JSON.stringify(chemin)}`);
+  assert.equal(altere((b) => { b.elements[1].mode = "999"; }).ok, false, "droits impossibles");
+  assert.equal(altere((b) => { b.elements[1].mode = 420; }).ok, false, "droits non textuels");
+  assert.equal(altere((b) => { b.elements[1].type = "lien"; }).ok, false, "type inconnu");
+  assert.equal(altere((b) => { b.elements.push({ ...b.elements[1] }); }).ok, false, "élément en double");
+  assert.equal(altere((b) => { b.racine = "/autre"; }).ok, false, "autre dossier des secrets");
+  assert.equal(altere((b) => { b.version = 2; }).ok, false, "version inconnue");
+  assert.equal(altere((b) => { b.elements = []; }).ok, false, "aucun élément");
+  assert.equal(verifier(null).ok, false);
+  // Windows : autorisations à appliquer (SDDL) et description enregistrée.
+  assert.equal(verifier(winOk, "win32", "C:\\S").ok, true, "dossier des secrets comparé sans tenir compte de la casse");
+  assert.equal(altere((b) => { b.elements[0].sddl = "D:PAI(A;OICI;FA;;;WD)"; }, "win32", "C:\\s").ok, false, "deux versions différentes des autorisations");
+  assert.equal(altere((b) => { delete b.elements[1].sddl; delete b.elements[1].securite.sddl; }, "win32", "C:\\s").ok, false, "autorisations à appliquer absentes");
+  assert.equal(altere((b) => { b.elements[1].securite.proprietaire = "pirate"; }, "win32", "C:\\s").ok, false, "propriétaire invalide");
+  assert.equal(altere((b) => { b.elements[1].securite.entrees.push({ type: 9, sid: U, masque: 1, drapeaux: 0 }); }, "win32", "C:\\s").ok, false, "entrée non standard");
+  assert.equal(altere((b) => { b.elements[1].chemin = "brands\\kora.json"; }, "win32", "C:\\s").ok, false, "séparateur Windows dans le chemin");
+});
+
 
 // ===========================================================================
 // LINUX ET MACOS RÉELS
@@ -794,6 +880,136 @@ test("POSIX (réel) : restauration manuelle — aperçu sans effet, application 
   const refus = script("--appliquer");
   assert.equal(refus.status, 4);
   assert.match(refus.stderr, /Restauration refusée par prudence/);
+});
+
+// Installation corrigée une fois : secrets 755/755/644 resserrés, une sauvegarde écrite.
+async function installationCorrigee(nom) {
+  const i = installation(nom);
+  const brandsDir = path.join(i.secrets, "brands");
+  const kora = path.join(brandsDir, "kora.json");
+  fs.mkdirSync(brandsDir, { recursive: true });
+  fs.writeFileSync(kora, "{}");
+  fs.chmodSync(i.secrets, 0o755); fs.chmodSync(brandsDir, 0o755); fs.chmodSync(kora, 0o644);
+  const r = await sdAvec(i, () => sd.ensureSecretsDir());
+  assert.equal(r.etat, "corrige", JSON.stringify(r.problemes));
+  const [nomSauvegarde] = fs.readdirSync(i.sauvegardes);
+  return { i, brandsDir, kora, sauvegarde: path.join(i.sauvegardes, nomSauvegarde) };
+}
+const restaurerAvec = (i, fichier, ...a) => spawnSync(process.execPath, [path.join(root, "scripts", "restaurer-droits-secrets.mjs"), fichier, ...a], { encoding: "utf8", env: { ...process.env, JURGENITA_SECRETS_DIR: i.secrets, JURGENITA_SECRETS_BACKUP_DIR: "" } });
+// Copie (modifiable) d'une sauvegarde, dans le dossier des sauvegardes, en 600.
+function copieSauvegarde(origine, nom, modifier) {
+  const c = path.join(path.dirname(origine), nom);
+  const v = JSON.parse(fs.readFileSync(origine, "utf8"));
+  modifier?.(v);
+  fs.writeFileSync(c, JSON.stringify(v), { mode: 0o600 });
+  if (posix) fs.chmodSync(c, 0o600);
+  return c;
+}
+
+test("POSIX (réel) : une sauvegarde existante n'est jamais écrasée — chaque correction en crée une nouvelle", surPosix, async () => {
+  const { i, kora, sauvegarde } = await installationCorrigee("sans-ecrasement");
+  const avant = empreinte(sauvegarde);
+  fs.chmodSync(kora, 0o644);
+  const r = await sdAvec(i, () => sd.ensureSecretsDir());
+  assert.equal(r.etat, "corrige");
+  const fichiers = fs.readdirSync(i.sauvegardes).filter((f) => f.endsWith(".json"));
+  assert.equal(fichiers.length, 2, "une nouvelle sauvegarde, à côté de la première");
+  assert.equal(empreinte(sauvegarde), avant, "première sauvegarde intacte");
+  assert.deepEqual(fs.readdirSync(i.sauvegardes).filter((f) => f.includes(".tmp-jurgenita")), [], "aucun temporaire laissé");
+});
+
+test("POSIX (réel) : échec d'écriture de la sauvegarde → aucune permission du dossier des secrets modifiée", surPosix, async () => {
+  const i = installation("sauvegarde-echec");
+  const brandsDir = path.join(i.secrets, "brands");
+  const kora = path.join(brandsDir, "kora.json");
+  fs.mkdirSync(brandsDir, { recursive: true });
+  fs.writeFileSync(kora, "{}");
+  fs.chmodSync(i.secrets, 0o755); fs.chmodSync(brandsDir, 0o755); fs.chmodSync(kora, 0o644);
+  const panne = { ...fs, linkSync: () => { throw Object.assign(new Error("panne simulée du disque"), { code: "EIO" }); } };
+  const r = await sdAvec(i, () => sd.ensureSecretsDir({ fsImpl: panne }));
+  assert.equal(r.etat, "correction_interrompue");
+  assert.ok(r.problemes.some((p) => p.code === "sauvegarde_impossible" && /rien n'a été modifié/.test(p.message)), JSON.stringify(r.problemes));
+  assert.deepEqual([mode(i.secrets), mode(brandsDir), mode(kora)], [0o755, 0o755, 0o644], "droits du dossier des secrets inchangés");
+  assert.deepEqual(fs.readdirSync(i.sauvegardes), [], "ni sauvegarde partielle ni temporaire");
+  assert.equal(r.sauvegarde, null);
+});
+
+test("POSIX (réel) : dossier des sauvegardes non inscriptible → aucune permission modifiée, accès aux secrets non déclaré refusé", surPosixNonRoot, async () => {
+  const i = installation("sauvegardes-figees");
+  fs.mkdirSync(i.secrets);
+  fs.chmodSync(i.secrets, 0o755);
+  fs.mkdirSync(i.sauvegardes);
+  fs.chmodSync(i.sauvegardes, 0o500);
+  try {
+    const r = await sdAvec(i, () => sd.ensureSecretsDir());
+    assert.equal(r.etat, "correction_interrompue");
+    assert.equal(mode(i.secrets), 0o755, "rien corrigé sans sauvegarde possible");
+    assert.equal(r.acces, "ok", "les secrets restent accessibles : seul le dossier des sauvegardes est en cause");
+    assert.ok(r.problemes.some((p) => p.message.startsWith("Dossier des sauvegardes")), JSON.stringify(r.problemes));
+  } finally { fs.chmodSync(i.sauvegardes, 0o700); }
+});
+
+test("POSIX (réel) : sauvegarde altérée refusée — fichier exposé, chemin hors du dossier des secrets, droits invalides, type changé ; rien n'est modifié", surPosix, async () => {
+  const { i, brandsDir, kora, sauvegarde } = await installationCorrigee("alteree");
+  const etat = () => [mode(i.secrets), mode(brandsDir), mode(kora)];
+  const avant = etat();
+  const essais = [
+    ["fichier exposé", () => { const c = copieSauvegarde(sauvegarde, "expose.json"); fs.chmodSync(c, 0o644); return c; }, 4, /Sauvegarde altérée : le fichier est accessible à d'autres comptes/],
+    ["chemin hors du dossier des secrets", () => copieSauvegarde(sauvegarde, "hors.json", (v) => { v.elements[0].chemin = "../../hors"; }), 3, /Sauvegarde altérée ou invalide[\s\S]*chemin interdit/],
+    ["droits invalides", () => copieSauvegarde(sauvegarde, "droits.json", (v) => { v.elements[0].mode = "9999"; }), 3, /droits invalides/],
+    ["type changé", () => copieSauvegarde(sauvegarde, "type.json", (v) => { v.elements.find((e) => e.chemin === "brands/kora.json").type = "dossier"; }), 4, /n'est plus un dossier/],
+  ];
+  for (const [nom, preparer, code, message] of essais) {
+    const copie = preparer();
+    const r = restaurerAvec(i, copie, "--appliquer");
+    assert.equal(r.status, code, `${nom} :\n${r.stdout}${r.stderr}`);
+    assert.match(r.stderr, message, nom);
+    assert.deepEqual(etat(), avant, `${nom} : rien n'a été modifié`);
+    fs.rmSync(copie);
+  }
+  assert.equal(restaurerAvec(i, sauvegarde).status, 0, "la sauvegarde d'origine reste utilisable");
+});
+
+test("POSIX (réel, root) : sauvegarde appartenant à un autre compte → refusée", surPosixRoot, async () => {
+  const { i, sauvegarde } = await installationCorrigee("alteree-proprietaire");
+  const copie = copieSauvegarde(sauvegarde, "etrangere.json");
+  fs.chownSync(copie, 65534, 65534);
+  const r = restaurerAvec(i, copie, "--appliquer");
+  assert.equal(r.status, 4, r.stdout + r.stderr);
+  assert.match(r.stderr, /Sauvegarde altérée : le fichier appartient à un autre compte/);
+});
+
+test("nettoyage : les sauvegardes créées par un test sont supprimées même quand ce test échoue", async () => {
+  const b = base("nettoyage");
+  const fixture = path.join(b, "echec-volontaire.test.mjs");
+  const rapport = path.join(b, "rapport.json");
+  fs.writeFileSync(fixture, [
+    'import { test, after } from "node:test";',
+    'import assert from "node:assert/strict";',
+    'import fs from "node:fs";',
+    'import path from "node:path";',
+    `const racine = ${JSON.stringify(b)};`,
+    'const secrets = fs.mkdtempSync(path.join(racine, "secrets-"));',
+    'const sauvegardes = fs.mkdtempSync(path.join(racine, "sauvegardes-"));',
+    'after(() => { for (const d of [secrets, sauvegardes]) fs.rmSync(d, { recursive: true, force: true }); });',
+    'test("échoue après avoir créé une vraie sauvegarde", async () => {',
+    '  Object.assign(process.env, { JURGENITA_SECRETS_DIR: secrets, JURGENITA_SECRETS_BACKUP_DIR: sauvegardes, JURGENITA_SECRETS_PERMISSIONS: "" });',
+    '  const jeton = path.join(secrets, "google-token.json");',
+    '  fs.writeFileSync(jeton, "{}");',
+    '  if (process.platform !== "win32") { fs.chmodSync(secrets, 0o755); fs.chmodSync(jeton, 0o644); }',
+    `  const sd = await import(${JSON.stringify(srcUrl("secret-dir.js"))});`,
+    '  const r = await sd.ensureSecretsDir();',
+    `  fs.writeFileSync(${JSON.stringify(rapport)}, JSON.stringify({ sauvegardes, fichiers: fs.readdirSync(sauvegardes), etat: r.etat, problemes: r.problemes }));`,
+    '  assert.fail("échec volontaire");',
+    '});',
+  ].join("\n"));
+  // Lancé comme un test ordinaire : sans le contexte du lanceur de tests en cours.
+  const run = spawnSync(process.execPath, ["--test", fixture], { encoding: "utf8", cwd: root, timeout: 120_000, env: { ...process.env, NODE_TEST_CONTEXT: undefined } });
+  assert.notEqual(run.status, 0, `le test volontairement en échec a bien échoué :\n${run.stdout}`);
+  const info = JSON.parse(fs.readFileSync(rapport, "utf8"));
+  assert.equal(info.etat, "corrige", JSON.stringify(info));
+  assert.ok(info.fichiers.some((f) => /^(droits|acl)-.*\.json$/.test(f)), `une vraie sauvegarde a été créée : ${JSON.stringify(info.fichiers)}`);
+  assert.equal(fs.existsSync(info.sauvegardes), false, "dossier des sauvegardes du test supprimé malgré l'échec");
 });
 
 // ===========================================================================

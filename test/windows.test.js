@@ -153,9 +153,10 @@ function request(port, method, p, body) {
 test("Windows (verrou NTFS réel) : serveur complet → autres routes disponibles, 200 après libération, 503 + Retry-After si le verrou persiste", onlyWindows, async () => {
   const runtime = newDir("rt");
   const secrets = newDir("sec");
+  const sauvegardes = newDir("sauvegardes"); // sauvegardes de droits (2b.4) propres à ce serveur
   const child = spawn(process.execPath, ["server.js"], {
     cwd: root,
-    env: { ...process.env, PORT: "0", JURGENITA_DEMO: "1", JURGENITA_NO_SCHEDULER: "1", JURGENITA_RUNTIME_DIR: runtime, JURGENITA_SECRETS_DIR: secrets,
+    env: { ...process.env, PORT: "0", JURGENITA_DEMO: "1", JURGENITA_NO_SCHEDULER: "1", JURGENITA_RUNTIME_DIR: runtime, JURGENITA_SECRETS_DIR: secrets, JURGENITA_SECRETS_BACKUP_DIR: sauvegardes,
       META_ACCESS_TOKEN: "", TIKTOK_ACCESS_TOKEN: "", LINKEDIN_ACCESS_TOKEN: "", TELEGRAM_BOT_TOKEN: "", GOOGLE_CLIENT_ID: "", GOOGLE_CLIENT_SECRET: "" },
   });
   let logs = "";
@@ -198,6 +199,7 @@ test("Windows (verrou NTFS réel) : serveur complet → autres routes disponible
     child.kill();
     cleanup(runtime);
     cleanup(secrets);
+    cleanup(sauvegardes);
   }
 });
 
@@ -206,6 +208,7 @@ test("Windows (verrou NTFS réel) : jetons TikTok et LinkedIn toujours masqués 
   const LINKEDIN = "liWp52Hs9Ke3Gd7Tq4Mz8";
   const runtime = newDir("rt");
   const secrets = newDir("sec");
+  const sauvegardes = newDir("sauvegardes"); // sauvegardes de droits (2b.4) propres à ce processus
   const file = path.join(secrets, "brands", "kora.json");
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify({ tiktok_token: TIKTOK, linkedin_token: LINKEDIN, linkedin_org_id: "org-1" }));
@@ -226,7 +229,7 @@ test("Windows (verrou NTFS réel) : jetons TikTok et LinkedIn toujours masqués 
     process.stdout.write("@@resultat " + JSON.stringify(out) + "\\n");`;
   const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
     cwd: root,
-    env: { ...process.env, T1: TIKTOK, T2: LINKEDIN, JURGENITA_SECRETS_DIR: secrets, JURGENITA_RUNTIME_DIR: runtime, TIKTOK_ACCESS_TOKEN: "", LINKEDIN_ACCESS_TOKEN: "", META_ACCESS_TOKEN: "" },
+    env: { ...process.env, T1: TIKTOK, T2: LINKEDIN, JURGENITA_SECRETS_DIR: secrets, JURGENITA_SECRETS_BACKUP_DIR: sauvegardes, JURGENITA_RUNTIME_DIR: runtime, TIKTOK_ACCESS_TOKEN: "", LINKEDIN_ACCESS_TOKEN: "", META_ACCESS_TOKEN: "" },
   });
   let stdout = "";
   let stderr = "";
@@ -257,6 +260,7 @@ test("Windows (verrou NTFS réel) : jetons TikTok et LinkedIn toujours masqués 
     child.kill();
     cleanup(runtime);
     cleanup(secrets);
+    cleanup(sauvegardes);
   }
 });
 
@@ -311,13 +315,13 @@ const cibleAcl = (moi, herite) => [moi, SY, BA].map((s) => `${s}|${PLEIN}|Allow|
 const empreinteW = (p) => createHash("sha256").update(fs.readFileSync(p)).digest("hex");
 
 // ensureSecretsDir sur un dossier des secrets donné (sauvegardes à côté).
-async function protegerSecrets(secrets, { permissions = "", env } = {}) {
+async function protegerSecrets(secrets, { permissions = "", env, fsImpl } = {}) {
   const avant = { ...process.env };
   process.env.JURGENITA_SECRETS_DIR = secrets;
   process.env.JURGENITA_SECRETS_PERMISSIONS = permissions;
   delete process.env.JURGENITA_SECRETS_BACKUP_DIR;
   try {
-    const r = await sd.ensureSecretsDir(env ? { env } : {});
+    const r = await sd.ensureSecretsDir({ ...(env && { env }), ...(fsImpl && { fsImpl }) });
     console.log(`# protection : ${r.etat} / ${r.niveau} : ${r.resume}`);
     for (const p of r.problemes) console.log(`#   [${p.niveau}] ${p.code} : ${p.message}`);
     return r;
@@ -349,6 +353,36 @@ async function jetonReel() {
   assert.equal(j.certain, true, j.problemes.join(" ; "));
   return j;
 }
+// Droits effectifs compte par compte, à partir des règles lues par .NET
+// (indépendant du code testé) : autorisations moins refus, règles « héritage
+// seulement » exclues. L'ordre des règles n'y entre pas.
+function droitsParCompte(p) {
+  const m = new Map();
+  for (const r of lireAcl(p).regles) {
+    if (/InheritOnly/.test(r.propagation)) continue;
+    const x = m.get(r.sid) || { autorise: 0, refuse: 0 };
+    if (r.type === "Allow") x.autorise |= r.droits; else x.refuse |= r.droits;
+    m.set(r.sid, x);
+  }
+  return [...m.keys()].sort().map((sid) => `${sid}=${((m.get(sid).autorise & ~m.get(sid).refuse) >>> 0).toString(16)}`).join(" ");
+}
+// Accès réel du compte courant, vérifié par Windows : lister ou lire, et écrire.
+function accesReel(p) {
+  try {
+    if (fs.statSync(p).isDirectory()) {
+      fs.readdirSync(p);
+      const sonde = path.join(p, `.acces-${process.pid}-${Date.now()}`);
+      fs.writeFileSync(sonde, "");
+      fs.rmSync(sonde);
+    } else {
+      fs.readFileSync(p);
+      fs.closeSync(fs.openSync(p, "r+"));
+    }
+    return "ok";
+  } catch (err) { return err.code || "erreur"; }
+}
+const cheminEgal = (a, b) => a.toLowerCase() === b.toLowerCase();
+
 // PowerShell réel avec une panne injectée : l'opération visée est envoyée sur un chemin inexistant.
 const psAvecPanne = (visee) => async (nom, env) => {
   if (nom === "appliquer") {
@@ -421,6 +455,14 @@ test("Windows (ACL réelle) : autorisations trop larges → resserrées ; SYSTEM
     assert.ok(!JSON.stringify(sv).includes("tkFactice2b4Windows"), "aucun secret dans la sauvegarde");
     assert.equal(lireAcl(t.sauvegardes).protegee, true);
     assert.deepEqual(regles(lireAcl(path.join(t.sauvegardes, noms[0]))), cibleAcl(moi, true), "sauvegarde protégée par héritage");
+    // Une sauvegarde existante n'est jamais écrasée : une nouvelle correction en crée une autre.
+    const premiere = path.join(t.sauvegardes, noms[0]);
+    const empreintePremiere = empreinteW(premiere);
+    icacls(t.secrets, "/grant", `*${BU}:(OI)(CI)(RX)`);
+    const r2 = await protegerSecrets(t.secrets);
+    assert.equal(r2.etat, "corrige", JSON.stringify(r2.problemes));
+    assert.equal(fs.readdirSync(t.sauvegardes).filter((f) => f.startsWith("acl-") && f.endsWith(".json")).length, 2, "une nouvelle sauvegarde");
+    assert.equal(empreinteW(premiere), empreintePremiere, "première sauvegarde intacte");
   } finally { cleanup(base); }
 });
 
@@ -490,6 +532,8 @@ test("Windows (ACL réelle) : panne injectée après le dossier principal → re
   try {
     const t = arbreOuvert(base);
     const avant = t.tous.map(etatAcl);
+    const avantDroits = t.tous.map(droitsParCompte);
+    const avantAcces = t.tous.map(accesReel);
     const jeton = await jetonReel();
     const lu = await win.inspecter(win.executerPowerShell, { arbres: [t.secrets] });
     const r = await win.protegerArbre({ racine: t.secrets, elements: lu.arbres[0].elements, jeton, ps: psAvecPanne((op) => op.chemin === t.kora && op.sddl === win.SDDL_HERITAGE_SEUL) });
@@ -497,6 +541,14 @@ test("Windows (ACL réelle) : panne injectée après le dossier principal → re
     assert.equal(r.etape, "application");
     assert.equal(r.restauration.etat, "restaure", JSON.stringify(r.restauration));
     assert.deepEqual(t.tous.map(etatAcl), avant, t.tous.map((p) => lireAcl(p).sddl).join("\n"));
+    // Droits effectifs conservés, même si Windows a réordonné les entrées héritées.
+    assert.deepEqual(t.tous.map(droitsParCompte), avantDroits, "droits effectifs compte par compte identiques (règles lues par .NET)");
+    assert.deepEqual(t.tous.map(accesReel), avantAcces, "accès réel du compte courant identique");
+    const apres = (await win.inspecter(win.executerPowerShell, { arbres: [t.secrets] })).arbres[0].elements;
+    for (const e of lu.arbres[0].elements) {
+      const a = apres.find((x) => cheminEgal(x.chemin, e.chemin));
+      assert.ok(a && win.memesDroitsEffectifs(a.securite, e.securite, jeton), `${e.chemin} : droits effectifs calculés identiques`);
+    }
   } finally { cleanup(base); }
 });
 
@@ -526,6 +578,8 @@ test("Windows (ACL réelle) : script de restauration → aperçu sans effet, app
   try {
     const t = arbreOuvert(base);
     const avant = t.tous.map(etatAcl);
+    const avantDroits = t.tous.map(droitsParCompte);
+    const avantAcces = t.tous.map(accesReel);
     const r = await protegerSecrets(t.secrets);
     assert.equal(r.etat, "corrige", JSON.stringify(r.problemes));
     const protege = t.tous.map(etatAcl);
@@ -538,10 +592,61 @@ test("Windows (ACL réelle) : script de restauration → aperçu sans effet, app
     const app = script("--appliquer");
     assert.equal(app.status, 0, app.stdout + app.stderr);
     assert.deepEqual(t.tous.map(etatAcl), avant, "autorisations d'origine rétablies");
+    assert.deepEqual(t.tous.map(droitsParCompte), avantDroits, "droits effectifs compte par compte identiques");
+    assert.deepEqual(t.tous.map(accesReel), avantAcces, "accès réel du compte courant identique");
     icacls(t.sauvegardes, "/grant", `*${BU}:(OI)(CI)(M)`);
     const refus = script("--appliquer");
     assert.equal(refus.status, 4, refus.stdout + refus.stderr);
     assert.match(refus.stderr, /Restauration refusée par prudence/);
+  } finally { cleanup(base); }
+});
+
+test("Windows (ACL réelle) : sauvegarde altérée refusée — autorisations ou propriétaire du fichier, autorisations enregistrées incohérentes, chemin hors du dossier ; rien n'est modifié", onlyWindows, async () => {
+  const base = newDir("acl-alteree");
+  try {
+    const t = arbreOuvert(base);
+    const r = await protegerSecrets(t.secrets);
+    assert.equal(r.etat, "corrige", JSON.stringify(r.problemes));
+    const protege = t.tous.map(etatAcl);
+    const [nom] = fs.readdirSync(t.sauvegardes).filter((f) => f.startsWith("acl-"));
+    const original = path.join(t.sauvegardes, nom);
+    const copie = (nomCopie, modifier) => {
+      const v = JSON.parse(fs.readFileSync(original, "utf8"));
+      modifier?.(v);
+      const c = path.join(t.sauvegardes, nomCopie);
+      fs.writeFileSync(c, JSON.stringify(v));
+      return c;
+    };
+    const script = (f) => spawnSync(process.execPath, [path.join(root, "scripts", "restaurer-droits-secrets.mjs"), f, "--appliquer"], { encoding: "utf8", env: { ...process.env, JURGENITA_SECRETS_DIR: t.secrets, JURGENITA_SECRETS_BACKUP_DIR: "" } });
+    const essais = [
+      ["autorisation ajoutée au fichier", () => { const c = copie("acl-ajout.json"); icacls(c, "/grant", `*${BU}:(M)`); return c; }, 4, /Sauvegarde altérée : les autorisations du fichier/],
+      ["propriétaire changé", () => { const c = copie("acl-proprietaire.json"); icacls(c, "/setowner", `*${BU}`); return c; }, 4, /Sauvegarde altérée : le fichier appartient/],
+      ["autorisations enregistrées incohérentes", () => copie("acl-sddl.json", (v) => { const e = v.elements.find((x) => x.chemin === "."); e.sddl = "D:PAI(A;OICI;FA;;;WD)"; e.securite.sddl = e.sddl; }), 3, /ne correspondent pas à l'état enregistré/],
+      ["chemin hors du dossier des secrets", () => copie("acl-chemin.json", (v) => { v.elements[1].chemin = "../hors"; }), 3, /chemin interdit/],
+    ];
+    for (const [nomEssai, preparer, code, message] of essais) {
+      const c = preparer();
+      const res = script(c);
+      console.log(`# ${nomEssai} : code ${res.status}`);
+      assert.equal(res.status, code, `${nomEssai} :\n${res.stdout}${res.stderr}`);
+      assert.match(res.stderr, message, nomEssai);
+      assert.deepEqual(t.tous.map(etatAcl), protege, `${nomEssai} : rien n'a été modifié`);
+      fs.rmSync(c, { force: true });
+    }
+  } finally { cleanup(base); }
+});
+
+test("Windows (ACL réelle) : échec d'écriture de la sauvegarde → aucune autorisation du dossier des secrets modifiée", onlyWindows, async () => {
+  const base = newDir("acl-sauvegarde-echec");
+  try {
+    const t = arbreOuvert(base);
+    const avant = t.tous.map((p) => lireAcl(p).sddl);
+    const panne = { ...fs, linkSync: () => { throw Object.assign(new Error("panne simulée du disque"), { code: "EIO" }); } };
+    const r = await protegerSecrets(t.secrets, { fsImpl: panne });
+    assert.equal(r.etat, "correction_interrompue", JSON.stringify(r.problemes));
+    assert.ok(r.problemes.some((p) => p.code === "sauvegarde_impossible"), JSON.stringify(r.problemes));
+    assert.deepEqual(t.tous.map((p) => lireAcl(p).sddl), avant, "autorisations du dossier des secrets inchangées");
+    assert.deepEqual(fs.readdirSync(t.sauvegardes).filter((f) => f.startsWith("acl-") || f.includes(".tmp-jurgenita")), [], "ni sauvegarde ni temporaire");
   } finally { cleanup(base); }
 });
 

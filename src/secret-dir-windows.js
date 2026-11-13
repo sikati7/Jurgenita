@@ -123,7 +123,7 @@ export function lireCsv(ligne) {
   out.push(cur);
   return out;
 }
-const estSid = (s) => /^S-1-\d+(-\d+)+$/.test(s || "");
+export const estSid = (s) => /^S-1-\d+(-\d+)+$/.test(s || "");
 
 export function construireJeton(jetonNet, sortieWhoamiUtilisateur, sortieWhoamiGroupes) {
   const problemes = [];
@@ -297,7 +297,34 @@ if ($r.fichier.existe -and -not $r.fichier.dossier) {
 Out-Jg $r
 `;
 
-export const SCRIPTS = { inspecter: SCRIPT_INSPECTER, appliquer: SCRIPT_APPLIQUER, diagnostiquer: SCRIPT_DIAGNOSTIQUER };
+// Lecture, par Windows lui-même, des ACL enregistrées dans une sauvegarde (SDDL),
+// pour vérifier qu'elles décrivent bien l'état enregistré à côté.
+const SCRIPT_CONVERTIR = `${PRELUDE}
+$in = $env:JG_ENTREE | ConvertFrom-Json
+$res = New-Object System.Collections.ArrayList
+foreach ($t in $in.sddl) {
+  try {
+    $raw = [System.Security.AccessControl.RawSecurityDescriptor]::new([string]$t)
+    $f = [int]$raw.ControlFlags
+    $s = @{ proprietaire = $null; protegee = (($f -band 4096) -ne 0); nulle = $false; entrees = @() }
+    if ($raw.Owner) { $s.proprietaire = $raw.Owner.Value }
+    if ((($f -band 4) -eq 0) -or ($null -eq $raw.DiscretionaryAcl)) { $s.nulle = $true }
+    else {
+      $l = New-Object System.Collections.ArrayList
+      foreach ($a in $raw.DiscretionaryAcl) {
+        $e = @{ type = [int]$a.AceType; drapeaux = [int]$a.AceFlags; masque = $null; sid = $null }
+        if ($a -is [System.Security.AccessControl.KnownAce]) { $e.masque = [int]$a.AccessMask; $e.sid = $a.SecurityIdentifier.Value }
+        [void]$l.Add($e)
+      }
+      $s.entrees = $l.ToArray()
+    }
+    [void]$res.Add(@{ ok = $true; securite = $s })
+  } catch { [void]$res.Add(@{ ok = $false; erreur = $_.Exception.GetType().Name }) }
+}
+Out-Jg @{ ok = $true; resultats = $res.ToArray() }
+`;
+
+export const SCRIPTS = { inspecter: SCRIPT_INSPECTER, appliquer: SCRIPT_APPLIQUER, diagnostiquer: SCRIPT_DIAGNOSTIQUER, convertir: SCRIPT_CONVERTIR };
 
 // Outils système appelés par leur chemin complet, jamais par le PATH : pas
 // d'homonyme (Git Bash fournit son propre whoami) ni de programme placé plus
@@ -404,7 +431,7 @@ export function enfantConforme(securite, jeton) {
   return vus.size === 3;
 }
 
-const proprietaireAutorise = (securite, jeton) => autorisesCible(jeton).has(securite?.proprietaire);
+export const proprietaireAutorise = (securite, jeton) => autorisesCible(jeton).has(securite?.proprietaire);
 
 // Accès d'autres comptes (pour le rapport) : autorisations effectives d'un SID
 // autre que les trois comptes autorisés.
@@ -537,6 +564,19 @@ export function memesDroits(a, b, { herites = true, proprietaire = true } = {}) 
   return true;
 }
 
+// Mêmes droits effectifs, compte par compte : pour chaque SID présent dans l'un
+// ou l'autre descripteur (et pour le jeton réel s'il est fourni), les droits
+// calculés comme Windows doivent être identiques. Indépendant de l'ordre des
+// entrées héritées, que Windows recalcule lors d'une restauration.
+const jetonSeul = (sid) => ({ utilisateur: sid, actifs: [], refus: [] });
+export function memesDroitsEffectifs(a, b, jeton = null) {
+  if (!a || !b) return false;
+  const sids = new Set([...liste(a.entrees), ...liste(b.entrees)].map((e) => e.sid).filter(estSid));
+  for (const s of [a.proprietaire, b.proprietaire]) if (estSid(s)) sids.add(s);
+  for (const sid of sids) if (droitsEffectifs(a, jetonSeul(sid)) !== droitsEffectifs(b, jetonSeul(sid))) return false;
+  return !jeton || droitsEffectifs(a, jeton) === droitsEffectifs(b, jeton);
+}
+
 // ---------------------------------------------------------------------------
 // Application et restauration
 // ---------------------------------------------------------------------------
@@ -558,6 +598,15 @@ export async function inspecter(ps, { arbres = [], chemins = [] }) {
   r.chemins = liste(r.chemins).map(normaliserElement);
   r.noms = r.noms || {};
   return r;
+}
+
+// Descripteurs décrits par des SDDL (sauvegarde), lus par Windows.
+export async function convertirSddl(ps, sddl) {
+  const r = await ps("convertir", { JG_ENTREE: JSON.stringify({ sddl }) });
+  if (!r.ok) return r;
+  const resultats = liste(r.resultats).map((x) => (x.ok ? { ok: true, securite: normaliserElement({ securite: x.securite }).securite } : { ok: false, erreur: x.erreur }));
+  if (resultats.length !== sddl.length) return { ok: false, code: "sortie_incomplete" };
+  return { ok: true, resultats };
 }
 
 // Vérification réelle, par Node lui-même (fs.access ne lit pas les ACL sous
@@ -593,7 +642,7 @@ export function verifierAccesReel(elements, { fsImpl = fs, sonde = false } = {})
 // Le dossier principal garde l'ACL protégée pendant 1-2 : l'accès de
 // l'utilisateur est préservé. Un échec en 1-2 ne restaure PAS le dossier
 // principal (« restauration partielle »).
-export async function restaurer({ racine, instantane, ps, proprietairesModifies = [] }) {
+export async function restaurer({ racine, instantane, ps, proprietairesModifies = [], jeton = null }) {
   const journal = [];
   const principal = instantane.find((e) => memeChemin(e.chemin, racine));
   const enfants = instantane.filter((e) => e !== principal).sort((a, b) => profondeur(b.chemin) - profondeur(a.chemin));
@@ -626,6 +675,9 @@ export async function restaurer({ racine, instantane, ps, proprietairesModifies 
     const a = lu.arbres[0].elements.find((x) => memeChemin(x.chemin, e.chemin));
     const proprio = !journal.some((j) => memeChemin(j.chemin, e.chemin));
     if (!a || !memesDroits(a.securite, e.securite, { herites: true, proprietaire: proprio })) return { ok: false, etat: "critique", etape: "verification_finale", chemin: e.chemin, journal };
+    // Droits effectifs identiques, quel que soit l'ordre des entrées héritées recalculées par Windows.
+    const attendu = proprio ? e.securite : { ...e.securite, proprietaire: a.securite.proprietaire };
+    if (!memesDroitsEffectifs(a.securite, attendu, jeton)) return { ok: false, etat: "critique", etape: "verification_droits_effectifs", chemin: e.chemin, journal };
   }
   return { ok: true, etat: "restaure", journal };
 }
@@ -667,7 +719,7 @@ export async function protegerArbre({ racine, elements, jeton, ps, fsImpl = fs, 
   }
   if (!echec) return { ok: true, corrections: ops.length, instantane };
   const proprietairesModifies = app.ok ? analyse.proprietaires : analyse.proprietaires.slice(0, Math.min(app.index, analyse.proprietaires.length));
-  const restauration = await restaurer({ racine, instantane, ps, proprietairesModifies });
+  const restauration = await restaurer({ racine, instantane, ps, proprietairesModifies, jeton });
   return { ok: false, ...echec, restauration, instantane };
 }
 

@@ -42,7 +42,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         env:
-          TESTS_WINDOWS_ATTENDUS: 21
+          TESTS_WINDOWS_ATTENDUS: 23
         run: |
           node --test test/windows.test.js | Tee-Object -FilePath windows-tests.txt
           if ($LASTEXITCODE -ne 0) { exit 1 }
@@ -60,3 +60,21 @@ jobs:
           grep -q "^# fail 0$" secret-dir-tests.txt
           grep -E "^ok [0-9]+ - POSIX \(réel\) : dossier interdit" secret-dir-tests.txt | grep -vq "# SKIP"
           if [ "$RUNNER_OS" = "macOS" ]; then grep -E "^ok [0-9]+ - macOS \(réel\)" secret-dir-tests.txt | grep -vq "# SKIP"; fi
+      # 2b.4 : aucune sauvegarde de droits laissée par les tests hors de leurs
+      # dossiers temporaires (ni dossier partagé, ni dossier de test oublié).
+      - name: Sauvegardes des tests nettoyées (Linux, macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          tmp=$(node -p "require('os').tmpdir()")
+          restes=$(ls -A "$tmp" | grep -E '^(secret-permissions-backups$|jurgenita-.*sauvegardes)' || true)
+          if [ -n "$restes" ]; then echo "Restes dans $tmp : $restes"; exit 1; fi
+          echo "Aucune sauvegarde de test laissée dans $tmp."
+      - name: Sauvegardes des tests nettoyées (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tmp = node -p "require('os').tmpdir()"
+          $restes = @(Get-ChildItem -LiteralPath $tmp -Force | Where-Object { $_.Name -eq 'secret-permissions-backups' -or $_.Name -match '^jurgenita-.*sauvegardes' })
+          if ($restes.Count -gt 0) { Write-Output ('Restes dans ' + $tmp + ' : ' + (($restes | ForEach-Object Name) -join ', ')); exit 1 }
+          Write-Output ('Aucune sauvegarde de test laissée dans ' + $tmp + '.')

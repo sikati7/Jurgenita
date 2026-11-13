@@ -21,7 +21,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { writeJsonAtomicAsync } from "./atomic-file.js";
+import { TEMP_SUFFIX } from "./atomic-file.js";
 import * as win from "./secret-dir-windows.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -558,15 +558,15 @@ async function protegerPosix(r, { racine, sauvegardes, mode, plateforme, fsImpl,
     return conseilsPosix(r, chaines, moi, arbre);
   }
   r.corrections.push(...sv.corrections);
-  // 2. Sauvegarde des droits actuels, avant toute modification.
-  const fichier = path.join(sauvegardes, `droits-${horodatage()}-${randomBytes(3).toString("hex")}.json`);
+  // 2. Sauvegarde des droits actuels, avant toute modification (jamais écrasée).
+  let fichier;
   try {
-    await writeJsonAtomicAsync(fichier, {
+    fichier = ecrireSauvegarde(sauvegardes, "droits", (f) => ({
       version: 1, plateforme, cree: new Date().toISOString(), racine,
       elements: arbre.aCorriger.map((c) => ({ chemin: relatif(racine, c.chemin), type: c.dossier ? "dossier" : "fichier", mode: octal(c.avant) })),
       dossier_sauvegardes: sv.corrections,
-      restauration: `node scripts/restaurer-droits-secrets.mjs ${afficher(fichier)} --appliquer`,
-    }, { mode: 0o600, dirMode: 0o700 });
+      restauration: `node scripts/restaurer-droits-secrets.mjs ${afficher(f)} --appliquer`,
+    }), { fsImpl });
   } catch (err) {
     r.etat = "correction_interrompue";
     ajouter(r, [{ niveau: "incertain", code: "sauvegarde_impossible", message: `Sauvegarde des droits impossible (${err.code || err.name}) : rien n'a été modifié.` }]);
@@ -607,7 +607,8 @@ async function preparerSauvegardesPosix({ sauvegardes, vue, moi, plateforme, acl
     }
   }
   const a = analyserArbrePosix({ racine: sauvegardes, vue, moi, plateforme, acl });
-  if (a.problemes.length) return { ok: false, problemes: a.problemes.map((p) => ({ ...p, message: `Dossier des sauvegardes : ${p.message}` })) };
+  // Un dossier des sauvegardes inaccessible n'empêche pas l'accès aux secrets : pas de « accès refusé » pour eux.
+  if (a.problemes.length) return { ok: false, problemes: a.problemes.map(({ acces, ...p }) => ({ ...p, message: `Dossier des sauvegardes : ${p.message}` })) };
   for (const c of a.aCorriger) {
     try { resserrer(c, fsImpl); corrections.push(`${afficher(c.chemin)} : ${octal(c.avant)} → ${octal(c.apres)}`); } catch (err) {
       return { ok: false, problemes: [{ niveau: "incertain", code: "sauvegarde_impossible", message: `Dossier des sauvegardes non protégeable (${err.code || err.name}) : rien n'a été modifié.` }] };
@@ -630,6 +631,95 @@ function conseilsPosix(r, chaines, moi, arbre) {
 
 const horodatage = () => new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "").replace("T", "-");
 const relatif = (racine, p) => { const x = path.relative(racine, p); return x ? x.split(path.sep).join("/") : "."; };
+
+// ---------------------------------------------------------------------------
+// Sauvegardes des droits
+// ---------------------------------------------------------------------------
+// Écriture sans jamais écraser : contenu écrit dans un temporaire, synchronisé
+// et relu, puis publié par un lien dur, qui échoue si le nom existe déjà
+// (EEXIST). Une sauvegarde existante n'est donc jamais remplacée : un autre nom
+// est tiré (5 essais au plus), sinon l'écriture échoue et rien n'est modifié.
+const nomSauvegarde = (prefixe) => `${prefixe}-${horodatage()}-${randomBytes(3).toString("hex")}`;
+export function ecrireSauvegarde(dossier, prefixe, contenu, { fsImpl = fs, nommer = () => nomSauvegarde(prefixe) } = {}) {
+  for (let essai = 0; essai < 5; essai++) {
+    const fichier = path.join(dossier, `${nommer()}.json`);
+    const texte = JSON.stringify(contenu(fichier), null, 2);
+    const temp = path.join(dossier, `.${path.basename(fichier)}.${randomBytes(6).toString("hex")}${TEMP_SUFFIX}`);
+    const fd = fsImpl.openSync(temp, "wx", 0o600);
+    try {
+      try {
+        fsImpl.writeFileSync(fd, texte);
+        fsImpl.fsyncSync(fd);
+      } finally {
+        fsImpl.closeSync(fd);
+      }
+      if (fsImpl.readFileSync(temp, "utf8") !== texte) throw Object.assign(new Error("relecture de la sauvegarde différente"), { code: "EVERIF" });
+      try {
+        fsImpl.linkSync(temp, fichier);
+      } catch (err) {
+        if (err.code === "EEXIST") continue; // nom déjà pris : la sauvegarde existante reste intacte
+        throw err;
+      }
+      synchroniserDossier(dossier, fsImpl);
+      return fichier;
+    } finally {
+      try { fsImpl.unlinkSync(temp); } catch { /* temporaire laissé sur place : aucun secret, suffixe reconnaissable */ }
+    }
+  }
+  throw Object.assign(new Error("aucun nom libre pour la sauvegarde : rien n'est écrasé"), { code: "EEXIST" });
+}
+
+function synchroniserDossier(dossier, fsImpl) {
+  if (process.platform === "win32") return;
+  let fd;
+  try {
+    fd = fsImpl.openSync(dossier, "r");
+    fsImpl.fsyncSync(fd);
+  } catch {
+    // certains systèmes de fichiers refusent : le lien reste en place
+  } finally {
+    if (fd !== undefined) try { fsImpl.closeSync(fd); } catch { /* */ }
+  }
+}
+
+// Contrôle du contenu d'une sauvegarde avant toute restauration. Toute
+// incohérence = sauvegarde altérée ou invalide : rien n'est restauré.
+export function validerSauvegarde(sauvegarde, { racine, plateforme = process.platform }) {
+  const p = plateforme === "win32" ? path.win32 : path.posix;
+  const cle = (x) => (plateforme === "win32" ? p.resolve(x).toLowerCase() : p.resolve(x));
+  const erreurs = [];
+  const elements = [];
+  if (!sauvegarde || typeof sauvegarde !== "object") return { ok: false, erreurs: ["contenu illisible"], elements };
+  if (sauvegarde.version !== 1) erreurs.push("version inconnue");
+  if (sauvegarde.plateforme !== plateforme) erreurs.push("sauvegarde faite sur un autre système");
+  if (typeof sauvegarde.racine !== "string" || cle(sauvegarde.racine) !== cle(racine)) erreurs.push("sauvegarde d'un autre dossier des secrets");
+  const liste = Array.isArray(sauvegarde.elements) ? sauvegarde.elements : [];
+  if (!liste.length) erreurs.push("aucun élément enregistré");
+  const vus = new Set();
+  liste.forEach((e, i) => {
+    const ou = `élément ${i + 1}`;
+    if (!e || typeof e !== "object" || typeof e.chemin !== "string") { erreurs.push(`${ou} : chemin absent`); return; }
+    const morceaux = e.chemin === "." ? [] : e.chemin.split("/");
+    if (morceaux.some((m) => !m || m === "." || m === ".." || /[\\:\0]/.test(m))) { erreurs.push(`${ou} : chemin interdit (${e.chemin})`); return; }
+    const absolu = p.join(p.resolve(racine), ...morceaux);
+    const rel = p.relative(p.resolve(racine), absolu);
+    if (rel.startsWith("..") || p.isAbsolute(rel)) { erreurs.push(`${ou} : chemin hors du dossier des secrets (${e.chemin})`); return; }
+    if (vus.has(cle(absolu))) { erreurs.push(`${ou} : élément en double (${e.chemin})`); return; }
+    vus.add(cle(absolu));
+    if (e.type !== "dossier" && e.type !== "fichier") erreurs.push(`${ou} : type inconnu`);
+    if (plateforme === "win32") {
+      const s = e.securite;
+      if (typeof e.sddl !== "string" || !/^(O:|D:)/.test(e.sddl)) erreurs.push(`${ou} : autorisations à appliquer absentes`);
+      if (!s || typeof s !== "object" || !win.estSid(s.proprietaire) || !Array.isArray(s.entrees)) erreurs.push(`${ou} : description des autorisations absente ou invalide`);
+      else if (s.entrees.some((x) => !x || ![0, 1].includes(x.type) || !win.estSid(x.sid) || !Number.isInteger(x.masque) || !Number.isInteger(x.drapeaux))) erreurs.push(`${ou} : entrée d'autorisation invalide`);
+      if (s && typeof s === "object" && s.sddl !== undefined && s.sddl !== e.sddl) erreurs.push(`${ou} : deux versions différentes des autorisations`);
+    } else if (typeof e.mode !== "string" || !/^[0-7]{3,4}$/.test(e.mode)) {
+      erreurs.push(`${ou} : droits invalides (${e.mode})`);
+    }
+    elements.push({ ...e, absolu });
+  });
+  return { ok: erreurs.length === 0, erreurs, elements };
+}
 
 // ---------------------------------------------------------------------------
 // Windows
@@ -727,13 +817,12 @@ async function protegerWindows(r, { racine, sauvegardes, mode, fsImpl, ps = win.
   if (a.bloquant) { r.etat = "correction_interrompue"; ajouter(r, a.problemes); return conseils(); }
   if (a.conforme) { r.etat = r.corrections.length ? "corrige" : "protege"; return conseils(); }
   // 3. Sauvegarde puis protection du dossier des secrets.
-  const fichier = win.wpathJoin(sauvegardes, `acl-${horodatage()}-${randomBytes(3).toString("hex")}.json`);
   const sauvegarder = async (instantane) => {
-    await writeJsonAtomicAsync(fichier, {
+    const fichier = ecrireSauvegarde(sauvegardes, "acl", (f) => ({
       version: 1, plateforme: "win32", cree: new Date().toISOString(), racine, utilisateur: jeton.utilisateur,
       elements: instantane.map((x) => ({ chemin: win.relatifWin(racine, x.chemin), type: x.dossier ? "dossier" : "fichier", sddl: x.securite.sddl, securite: x.securite })),
-      restauration: `node scripts/restaurer-droits-secrets.mjs ${afficher(fichier)} --appliquer`,
-    }, { mode: 0o600 });
+      restauration: `node scripts/restaurer-droits-secrets.mjs ${afficher(f)} --appliquer`,
+    }), { fsImpl });
     r.sauvegarde = afficher(fichier);
   };
   const p = await win.protegerArbre({ racine, elements: elementsSecrets, jeton, ps, fsImpl, sauvegarder });
