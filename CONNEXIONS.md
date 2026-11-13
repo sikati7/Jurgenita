@@ -198,10 +198,18 @@ node scripts/restaurer-droits-secrets.mjs data/secret-permissions-backups/<fichi
 ```
 
 - La première commande affiche un aperçu, sans rien modifier.
-- La seconde restaure les droits (le contenu d'abord, le dossier principal en dernier) et les vérifie.
+- La seconde restaure les droits (le contenu d'abord, le dossier principal en dernier) et les vérifie, droits effectifs compris.
 - Le script refuse par prudence (code 4) si un autre compte peut modifier le dossier des sauvegardes ou l'un de ses dossiers parents.
+- Il refuse aussi une sauvegarde altérée, sans rien modifier :
+  - fichier de sauvegarde dont le propriétaire ou les autorisations ne sont plus ceux attendus (vous, SYSTEM et Administrateurs uniquement) : code 4 ;
+  - contenu incohérent (code 3) : chemin hors du dossier des secrets, droits ou type invalides, ou, sous Windows, autorisations à appliquer qui ne correspondent pas à l'état enregistré.
+- Sous Windows, le propriétaire, la protection et les autorisations explicites sont rétablis à l'identique. Les autorisations héritées sont recalculées par Windows : même ensemble, ordre parfois différent, mêmes droits effectifs (vérifiés compte par compte).
 - Sous Windows, `icacls data\secrets /reset /T /C /Q` rétablit simplement les autorisations héritées du dossier parent.
+
+**Sauvegardes jamais écrasées** : chaque correction crée un nouveau fichier ; une sauvegarde existante n'est jamais remplacée. Si la sauvegarde ne peut pas être écrite, aucune permission du dossier des secrets n'est modifiée.
 
 **Emplacement des sauvegardes** : par défaut, à côté du dossier des secrets. Vous pouvez le changer avec `JURGENITA_SECRETS_BACKUP_DIR`, mais jamais à l'intérieur du dossier des secrets, ni l'inverse : la correction serait alors interrompue.
 
 **Disques particuliers** : sur un disque réseau, FAT ou exFAT (clé USB, par exemple), les droits ne peuvent pas être garantis. Jurgenita le signale sans rien corriger. Sous WSL, un projet placé sur `/mnt/c` ne garde pas les droits Linux : placez-le dans le système de fichiers Linux (`~/…`).
+
+**Ce qui a été vérifié sous Windows** : les tests Windows (vraies autorisations NTFS) ont été exécutés sur les machines Windows de l'intégration continue GitHub, avec un **compte administrateur, en session élevée**. Restent à vérifier : les **comptes standards** (avec le contrôle de compte d'utilisateur), les **comptes de domaine** et les **comptes Entra ID** (anciennement Azure AD). Sur ces comptes, la protection peut se comporter différemment, par exemple pour la prise de possession ou les groupes du jeton. En cas de doute, lancez d'abord Jurgenita en mode vérification.
