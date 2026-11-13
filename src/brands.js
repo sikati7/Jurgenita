@@ -4,15 +4,15 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
-import { fileURLToPath } from "node:url";
 import * as store from "./store.js";
 import {
   readJsonFile, readJsonFileRetrying, writeJsonAtomicAsync, removeFileAsync, withFileLock, leftoverTemps, describeUnreadable,
-  FileBusyError, ReadOnlyFileError,
+  FileBusyError, ReadOnlyFileError, AccessDeniedError,
 } from "./atomic-file.js";
+import { brandsDir, avantEcriture, diagnostiquerAcces } from "./secret-dir.js";
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const SECRETS_DIR = path.join(process.env.JURGENITA_SECRETS_DIR || path.join(here, "..", "data", "secrets"), "brands");
+// Dossier des accès des marques : chemin centralisé dans secret-dir.js (2b.4).
+const SECRETS_DIR = brandsDir();
 
 export const list = () => store.read("brands");
 export const defaultId = () => list()[0]?.id;
@@ -66,9 +66,14 @@ export async function remove(id) {
     try {
       await removeFileAsync(secretFile(id));
     } catch (err) {
+      const refus = await refusPermanent(err, secretFile(id));
+      if (refus) {
+        console.warn(`[accès] Suppression de la marque ${id} refusée par les droits du système. Rien n'a été supprimé.`);
+        throw new AccessDeniedError(secretFile(id), `La marque « ${id} » n'a pas été supprimée : accès refusé par les droits ${refus === "windows" ? "Windows" : "du système"} sur le fichier de ses accès. La marque est conservée, ainsi que ses accès. Voir Profil → Connexions.`);
+      }
       if (err instanceof FileBusyError) {
         console.warn(`[accès] Suppression de la marque ${id} reportée : fichier de ses accès verrouillé. Rien n'a été supprimé.`);
-        throw new FileBusyError(secretFile(id), `La marque « ${id} » n'a pas été supprimée : le fichier de ses accès est momentanément verrouillé (antivirus, synchronisation OneDrive, sauvegarde…). La marque est conservée, ainsi que ses accès : réessayez dans quelques secondes.`);
+        throw new FileBusyError(secretFile(id), `La marque « ${id} » n'a pas été supprimée : le fichier de ses accès est momentanément verrouillé (antivirus, synchronisation OneDrive, sauvegarde…). La marque est conservée, ainsi que ses accès : réessayez dans quelques secondes.${incertitudeWindows(err)}`);
       }
       if (err instanceof ReadOnlyFileError) {
         throw new ReadOnlyFileError(secretFile(id), `La marque « ${id} » n'a pas été supprimée : le fichier de ses accès est en lecture seule. Retirez sa protection en écriture, puis réessayez.`);
@@ -132,13 +137,38 @@ export function secretsForRedaction() {
 }
 
 const isLocked = (result) => result.etat === "illisible" && result.erreur.diagnostic?.categorie === "verrouille";
+const isDenied = (result) => result.etat === "illisible" && result.erreur.diagnostic?.categorie === "acces_refuse";
 
-// { etat: "absent" | "ok" | "illisible" | "verrouille", valeurs }
+// Refus permanent ? Sous Linux et macOS, EACCES l'établit déjà
+// (AccessDeniedError). Sous Windows, en fin de reprise (2b.3 inchangée), un
+// diagnostic par le jeton et les autorisations tranche entre refus permanent
+// et verrou passager ; en cas d'incertitude, le verrou (503) est conservé.
+async function refusPermanent(err, fichier) {
+  if (err instanceof AccessDeniedError) return "systeme";
+  if (err instanceof FileBusyError && process.platform === "win32") {
+    const d = await diagnostiquerAcces(fichier);
+    if (d === "refuse") return "windows";
+    if (d === "incertain") err.incertain = true;
+  }
+  return null;
+}
+const incertitudeWindows = (err) => (err?.incertain ? " Si le problème persiste, il peut aussi s'agir d'un refus des droits Windows : voir Profil → Connexions." : "");
+
+// { etat: "absent" | "ok" | "illisible" | "verrouille" | "acces_refuse", valeurs }
 // « verrouille » : fichier probablement valide mais momentanément inaccessible
 // (antivirus, OneDrive…) ; ce n'est PAS un fichier abîmé.
+// « acces_refuse » : refus permanent des droits du système (Linux, macOS).
 function secretsState(id) {
   const result = readJsonFile(secretFile(id));
   refreshRedactionCache(id, result);
+  if (isDenied(result)) {
+    if (!reported.has(`refus:${id}`)) {
+      reported.add(`refus:${id}`);
+      console.warn(`[accès] Accès de la marque ${id} refusés par les droits du système : ${describeUnreadable(result.erreur)}. Voir Profil → Connexions.`);
+    }
+    return { etat: "acces_refuse", valeurs: {} };
+  }
+  reported.delete(`refus:${id}`);
   if (isLocked(result)) {
     if (!reported.has(`verrou:${id}`)) {
       reported.add(`verrou:${id}`);
@@ -168,6 +198,7 @@ function readSecrets(id) {
 // Messages des erreurs de stockage, propres à une marque, sans chemin ni contenu.
 const busyError = (id) => new FileBusyError(secretFile(id), `Les accès de la marque « ${id} » sont momentanément verrouillés (antivirus, synchronisation OneDrive, sauvegarde…). Rien n'a été modifié : réessayez dans quelques secondes.`);
 const readOnlyError = (id) => new ReadOnlyFileError(secretFile(id), `Le fichier des accès de la marque « ${id} » est en lecture seule. Jurgenita ne le modifiera pas : retirez sa protection en écriture, puis réessayez.`);
+const accessDeniedError = (id, refus) => new AccessDeniedError(secretFile(id), `Accès refusé par les droits ${refus === "windows" ? "Windows" : "du système"} sur les accès de la marque « ${id} » (propriétaire ou permissions du dossier des secrets). Rien n'a été modifié. Voir Profil → Connexions.`);
 
 // Lecture avant modification (dans la file d'attente du fichier) : patiente
 // pendant un verrou passager, refuse un fichier réellement illisible (409).
@@ -176,7 +207,9 @@ async function readSecretsForUpdate(id) {
   try {
     result = await readJsonFileRetrying(secretFile(id));
   } catch (err) {
-    if (err instanceof FileBusyError) throw busyError(id);
+    const refus = await refusPermanent(err, secretFile(id));
+    if (refus) throw accessDeniedError(id, refus);
+    if (err instanceof FileBusyError) throw Object.assign(busyError(id), { message: busyError(id).message + incertitudeWindows(err) });
     throw err;
   }
   if (result.etat === "illisible") {
@@ -189,11 +222,17 @@ async function readSecretsForUpdate(id) {
 
 async function writeSecrets(id, value) {
   try {
-    await writeJsonAtomicAsync(secretFile(id), value, { mode: 0o600 });
+    await avantEcriture(); // dossier des secrets disparu : recréé et protégé d'abord (2b.4)
+    await writeJsonAtomicAsync(secretFile(id), value, { mode: 0o600, dirMode: 0o700 });
   } catch (err) {
+    const refus = await refusPermanent(err, secretFile(id));
+    if (refus) {
+      console.warn(`[accès] Enregistrement des accès de la marque ${id} refusé par les droits du système. Rien n'a été modifié.`);
+      throw accessDeniedError(id, refus);
+    }
     if (err instanceof FileBusyError) {
       console.warn(`[accès] Enregistrement des accès de la marque ${id} reporté : fichier verrouillé. Rien n'a été modifié.`);
-      throw busyError(id);
+      throw Object.assign(busyError(id), { message: busyError(id).message + incertitudeWindows(err) });
     }
     if (err instanceof ReadOnlyFileError) throw readOnlyError(id);
     throw err;
@@ -257,6 +296,7 @@ export function connectionStatus(id) {
   const state = secretsState(id);
   return {
     acces_illisibles: state.etat === "illisible",
+    acces_refuses: state.etat === "acces_refuse",
     meta: Boolean(c.meta.token && (c.meta.igUserId || c.meta.pageId)),
     meta_ads: Boolean(c.meta.token && c.meta.adAccountId),
     google_business: Boolean(c.googleBusinessLocation),

@@ -2,3 +2,6 @@ node_modules/
 .env
 data/runtime/
 data/secrets/
+
+# Sauvegardes des droits du dossier des secrets (2b.4) : jamais dans Git.
+data/secret-permissions-backups/

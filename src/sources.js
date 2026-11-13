@@ -1,8 +1,6 @@
 // Sources de données : les vrais comptes quand ils sont connectés, sinon les
 // données de démo de data/. Une source qui échoue retombe sur la démo.
 // La boîte mail et l'agenda sont les vôtres ; le reste est propre à chaque marque.
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import * as store from "./store.js";
 import * as brands from "./brands.js";
 import * as google from "./connectors/google.js";
@@ -12,6 +10,7 @@ import * as linkedin from "./connectors/linkedin.js";
 import * as redaction from "./redact.js";
 import { readJsonFile, describeUnreadable } from "./atomic-file.js";
 import { safeMessage } from "./safe-error.js";
+import { googleTokenFile } from "./secret-dir.js";
 
 async function tryLive(name, live, fallback) {
   try {
@@ -27,8 +26,7 @@ async function tryLive(name, live, fallback) {
 // serveur, ni apparaître dans un journal. Il est alors considéré comme « à
 // reconnecter » ; le fichier n'est jamais modifié ni supprimé ici.
 // Même emplacement que dans google.js.
-const here = path.dirname(fileURLToPath(import.meta.url));
-const TOKEN_FILE = path.join(process.env.JURGENITA_SECRETS_DIR || path.join(here, "..", "data", "secrets"), "google-token.json");
+const TOKEN_FILE = googleTokenFile(); // chemin centralisé (2b.4)
 
 let reportedProblem = null; // pour ne signaler un même problème qu'une fois
 

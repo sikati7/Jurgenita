@@ -803,8 +803,29 @@ function renderConnections() {
   const line = (name, ok, detail, action, label) =>
     el("li", {}, el("div", { class: "row" }, el("b", {}, name), el("span", { class: `tag ${ok ? "positif" : label ? "negatif" : "a_ignorer"}` }, ok ? "Connecté" : label || "Non connecté")),
       el("div", { class: "subj", style: "white-space:normal" }, detail), action ? el("div", { style: "margin-top:8px" }, action) : null);
+  // Protection du dossier des secrets (2b.4) : sûr, incertain ou dangereux.
+  const ligneProtection = (p) => {
+    if (!p) return null;
+    const [texte, classe] = p.acces === "refuse" ? ["Accès refusé", "negatif"]
+      : p.niveau === "dangereux" ? ["Insuffisante", "negatif"]
+      : p.niveau === "incertain" ? ["À vérifier", "a_deleguer"]
+      : p.etat === "corrige" ? ["Corrigée", "positif"] : ["Protégée", "positif"];
+    const marge = { style: "margin-top:6px" };
+    const detail = el("div", {},
+      el("div", {}, p.resume),
+      p.corrections.length ? el("div", marge, `Corrigé : ${p.corrections.join(" ; ")}`) : null,
+      p.problemes.length ? el("ul", { style: "margin:6px 0 0 18px;padding:0" }, ...p.problemes.slice(0, 6).map((x) =>
+        el("li", {}, `${x.niveau === "dangereux" ? "Danger" : x.niveau === "incertain" ? "Incertain" : "Information"} : ${x.message}`))) : null,
+      ...p.fonctionnalites.map((f) => el("div", marge, f)),
+      ...p.actions.slice(0, 3).map((a) => el("div", marge, `Que faire : ${a}`)),
+      p.sauvegarde ? el("div", marge, `Sauvegarde des droits : ${p.sauvegarde}`) : null,
+      p.env && p.env.niveau !== "sur" ? el("div", marge, `Information : ${p.env.message}`) : null);
+    return el("li", {}, el("div", { class: "row" }, el("b", {}, "Protection des secrets"), el("span", { class: `tag ${classe}` }, texte)),
+      el("div", { class: "subj", style: "white-space:normal" }, detail));
+  };
   fill($("#connexions"),
     line("Cerveau (API Claude)", state.mode === "live", state.mode === "live" ? `Modèle ${state.modele}` : "Mode démo : ajoutez ANTHROPIC_API_KEY dans .env puis relancez."),
+    ligneProtection(c.protection_secrets),
     line("Gmail + Google Agenda", c.gmail.connecte,
       c.gmail.connecte ? "Jurgenita lit vos mails des 3 derniers jours et votre agenda, et crée les brouillons dans Gmail."
         : c.gmail.reconnexion ? "Le jeton Google enregistré est illisible (fichier abîmé ou incomplet). En attendant, Jurgenita affiche les mails et l'agenda de démonstration. Reconnectez votre compte Google pour rétablir l'accès."

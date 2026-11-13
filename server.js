@@ -43,6 +43,7 @@ const security = await import("./src/security.js");
 const google = await import("./src/connectors/google.js");
 const meta = await import("./src/connectors/meta.js");
 const telegram = await import("./src/connectors/telegram.js");
+const secretDir = await import("./src/secret-dir.js");
 const LIVE = !process.env.JURGENITA_DEMO && Boolean(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN);
 const brain = LIVE ? await import("./src/claude.js") : await import("./src/demo.js");
 // Jetons des marques : dernières valeurs valides connues, pour qu'ils restent
@@ -182,7 +183,11 @@ const routes = {
     marque: brand,
     marques: brands.list(),
     profil: store.read("profile", brand),
-    connexions: { ...sources.connections(brand), telegram: { configure: telegram.configured(), pret: telegram.ready() } },
+    connexions: {
+      ...sources.connections(brand),
+      telegram: { configure: telegram.configured(), pret: telegram.ready() },
+      protection_secrets: secretDir.rapportPublic(secretDir.dernierRapport()),
+    },
   }),
 
   // Marques
@@ -372,6 +377,12 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+// Protection du dossier des secrets (2b.4) : vérifiée, et corrigée par
+// resserrement si c'est sûr, AVANT d'accepter la moindre requête. Ne bloque
+// jamais le démarrage : une situation dangereuse ou incertaine donne un
+// avertissement persistant (journal, Profil → Connexions).
+await secretDir.ensureSecretsDir();
+
 server.listen(PORT, HOST, () => {
   allowedHosts = security.allowedHosts(server.address().port);
   const c = sources.connections(brands.defaultId());
@@ -387,6 +398,9 @@ server.listen(PORT, HOST, () => {
   if (health.fichiers_temporaires) {
     console.warn(`  ⚠ ${health.fichiers_temporaires} fichier(s) temporaire(s) d'une écriture interrompue dans data/secrets/brands/ : ignorés, vos accès ne sont pas touchés.\n`);
   }
+  const protection = secretDir.dernierRapport();
+  for (const ligne of secretDir.lignesJournal(protection)) (protection?.niveau === "sur" ? console.log : console.warn)(ligne);
+  if (protection) console.log("");
   if (!security.isLoopback(HOST)) {
     console.warn("  ⚠ Jurgenita est ouverte au réseau (HOST) alors qu'elle n'a pas encore de connexion par mot de passe.");
     console.warn("    Toute personne qui atteint cette adresse peut lire vos données et agir. Ajoutez son nom à JURGENITA_ALLOWED_HOSTS seulement sur un réseau de confiance.\n");
