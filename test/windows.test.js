@@ -276,16 +276,19 @@ const INVITES = "S-1-5-32-546";
 const PLEIN = 2032127; // contrôle total
 
 function psSync(script, env = {}) {
-  const r = spawnSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", windowsHide: true, env: { ...process.env, ...env } });
+  const r = spawnSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", windowsHide: true, env: win.environnementPowerShell(env) });
   assert.equal(r.status, 0, `PowerShell : ${r.stderr}`);
   return r.stdout;
 }
-// Autorisations lues par Get-Acl, dans l'ordre de la liste.
+// Autorisations lues par l'API .NET des règles d'accès (FileSystemSecurity.GetAccessRules),
+// indépendante de la lecture binaire du code testé ; dans l'ordre de la liste.
 function lireAcl(p) {
   return JSON.parse(psSync([
-    "$a = Get-Acl -LiteralPath $env:JG_P",
-    "$r = @($a.Access | ForEach-Object { @{ sid = $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; droits = [int]$_.FileSystemRights; type = [string]$_.AccessControlType; herite = $_.IsInherited; heritage = [string]$_.InheritanceFlags; propagation = [string]$_.PropagationFlags } })",
-    "ConvertTo-Json -Compress -Depth 4 -InputObject @{ sddl = $a.Sddl; protegee = $a.AreAccessRulesProtected; proprietaire = $a.GetOwner([System.Security.Principal.SecurityIdentifier]).Value; regles = $r }",
+    "$p = $env:JG_P",
+    "if ([System.IO.Directory]::Exists($p)) { $a = [System.IO.Directory]::GetAccessControl($p) } else { $a = [System.IO.File]::GetAccessControl($p) }",
+    "$t = [System.Security.Principal.SecurityIdentifier]",
+    "$r = @($a.GetAccessRules($true, $true, $t) | ForEach-Object { @{ sid = $_.IdentityReference.Value; droits = [int]$_.FileSystemRights; type = [string]$_.AccessControlType; herite = $_.IsInherited; heritage = [string]$_.InheritanceFlags; propagation = [string]$_.PropagationFlags } })",
+    "ConvertTo-Json -Compress -Depth 4 -InputObject @{ sddl = $a.GetSecurityDescriptorSddlForm([System.Security.AccessControl.AccessControlSections]'Owner, Group, Access'); protegee = $a.AreAccessRulesProtected; proprietaire = $a.GetOwner($t).Value; regles = $r }",
   ].join("; "), { JG_P: p }));
 }
 // Propriétaire, protection et chaque entrée (explicite ou héritée), dans l'ordre.

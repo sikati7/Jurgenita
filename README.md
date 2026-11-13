@@ -94,6 +94,7 @@ flowchart LR
 │   ├── claude.js          appels à Claude : briefing, studio, vision, publicité, veille, rapport, agent
 │   ├── demo.js            même interface, sans IA (mode démo)
 │   ├── brands.js          marques (clients) et leurs accès, gardés hors de Git
+│   ├── secret-dir.js      protection du dossier des secrets (Linux, macOS ; Windows : secret-dir-windows.js)
 │   ├── sources.js         données par marque : vrais comptes si connectés, sinon démo
 │   ├── publisher.js       circuit de validation et publication programmée
 │   ├── connectors/        google · meta · tiktok · linkedin · telegram
@@ -110,9 +111,10 @@ flowchart LR
 
 - **L'humain valide toujours** : aucun mail n'est envoyé, une réponse publique n'est publiée qu'après une confirmation explicite, et un contenu ne part que s'il est **approuvé** (par vous ou par le client).
 - **Lien de validation client** : jeton aléatoire de 144 bits propre à chaque marque. Le client ne voit que les contenus à valider de sa marque, et ne peut que les approuver ou demander une modification.
-- **Accès séparés par marque** : les jetons de chaque client sont gardés dans `data/secrets/brands/` (permissions `600`) et ne sont jamais renvoyés à l'interface.
+- **Accès séparés par marque** : les jetons de chaque client sont gardés dans `data/secrets/brands/` et ne sont jamais renvoyés à l'interface.
 - **Accès local uniquement** : le serveur écoute sur `127.0.0.1`, car il n'a pas d'authentification.
-- **Secrets hors du code** : les clés sont dans `.env`, le jeton Google dans `data/secrets/` (permissions `600`), et les deux sont exclus de Git.
+- **Secrets hors du code** : les clés sont dans `.env`, le jeton Google dans `data/secrets/`, et les deux sont exclus de Git.
+- **Dossier des secrets réservé à votre compte** (`src/secret-dir.js`) : vérifié à chaque démarrage. Sous Linux et macOS, les droits trop larges sont resserrés (dossiers `700`, fichiers `600`) ; sous Windows, l'héritage est coupé et seuls votre compte, SYSTEM et Administrateurs gardent l'accès. La correction ne fait que **resserrer** : jamais un droit ajouté, jamais un dossier parent ni le `.env` modifiés (le `.env` est seulement vérifié). Les droits d'origine sont sauvegardés avant toute correction dans `data/secret-permissions-backups/` (hors de Git) et restaurables. Si un autre compte peut remplacer le dossier par un de ses dossiers parents, ou si la situation est incertaine (règle de refus, groupe aux membres inconnus, lien), rien n'est modifié et un avertissement s'affiche dans **Profil → Connexions**. Un accès refusé par les droits du système est signalé tout de suite (409), sans être pris pour un verrou. Détails : [CONNEXIONS.md](CONNEXIONS.md#9-protection-du-dossier-des-secrets).
 - **Protection contre les requêtes venues d'autres sites** (`src/security.js`) : seuls les noms de site autorisés sont servis (contre le DNS rebinding), les actions doivent venir de Jurgenita elle-même et être envoyées en JSON (contre le CSRF), et Jurgenita refuse de s'afficher dans le cadre d'un autre site (contre le clickjacking). Vérifié par des tests qui rejouent chaque attaque sur chaque action sensible.
 - **Connexion Google protégée contre la falsification de requête (CSRF)** : un paramètre `state` aléatoire est vérifié au retour de Google.
 - **Telegram verrouillé** : le bot ne répond qu'au chat de son propriétaire.

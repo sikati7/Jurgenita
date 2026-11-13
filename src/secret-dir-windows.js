@@ -127,6 +127,7 @@ const estSid = (s) => /^S-1-\d+(-\d+)+$/.test(s || "");
 
 export function construireJeton(jetonNet, sortieWhoamiUtilisateur, sortieWhoamiGroupes) {
   const problemes = [];
+  const notes = [];
   const lignes = (t) => String(t || "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   const utilisateurWhoami = lignes(sortieWhoamiUtilisateur).map(lireCsv).map((f) => f[f.length - 1]).find(estSid);
   const groupesWhoami = lignes(sortieWhoamiGroupes).map(lireCsv).map((f) => f[2]).filter(estSid);
@@ -135,11 +136,17 @@ export function construireJeton(jetonNet, sortieWhoamiUtilisateur, sortieWhoamiG
   if (!groupesWhoami.length) problemes.push("whoami /groups illisible");
   if (jetonNet && utilisateurWhoami && jetonNet.utilisateur !== utilisateurWhoami) problemes.push("utilisateur différent selon whoami et .NET");
   // SID de session de connexion et étiquettes d'intégrité : présents dans le jeton, jamais dans une ACL de fichier utile ici.
-  const tous = new Set(groupesWhoami.filter((s) => !/^S-1-5-5-/.test(s) && !/^S-1-16-/.test(s)));
+  const vusWhoami = new Set(groupesWhoami.filter((s) => !/^S-1-5-5-/.test(s) && !/^S-1-16-/.test(s)));
   const actifs = new Set((jetonNet?.actifs || []).filter(estSid));
-  for (const s of actifs) if (!tous.has(s)) problemes.push(`groupe ${s} présent pour .NET mais absent de whoami`);
+  const refusNet = (jetonNet?.refus || []).filter(estSid);
+  // whoami n'affiche pas tous les groupes du jeton (par exemple le groupe local
+  // « Aucun », RID 513, que .NET lit) : les deux lectures sont réunies. Cela ne
+  // fait qu'élargir les SID pris en compte pour les règles de refus.
+  const absents = [...actifs].filter((s) => !vusWhoami.has(s));
+  if (absents.length) notes.push(`groupes lus par .NET et non affichés par whoami : ${absents.join(", ")}`);
+  const tous = new Set([...vusWhoami, ...actifs, ...refusNet]);
   // Tout SID du jeton qui n'est pas un groupe actif compte pour les refus (prudence).
-  const refus = new Set([...(jetonNet?.refus || []).filter(estSid), ...[...tous].filter((s) => !actifs.has(s))]);
+  const refus = new Set([...refusNet, ...[...vusWhoami].filter((s) => !actifs.has(s))]);
   return {
     utilisateur: jetonNet?.utilisateur || utilisateurWhoami || null,
     actifs: [...actifs],
@@ -147,6 +154,7 @@ export function construireJeton(jetonNet, sortieWhoamiUtilisateur, sortieWhoamiG
     tous: [...tous],
     certain: problemes.length === 0,
     problemes,
+    notes,
   };
 }
 
@@ -291,10 +299,18 @@ Out-Jg $r
 
 export const SCRIPTS = { inspecter: SCRIPT_INSPECTER, appliquer: SCRIPT_APPLIQUER, diagnostiquer: SCRIPT_DIAGNOSTIQUER };
 
+// Environnement de Windows PowerShell 5.1 : sans le PSModulePath hérité (lancé
+// depuis PowerShell 7, il désigne des modules incompatibles avec la version 5.1).
+export function environnementPowerShell(env = {}) {
+  const e = { ...process.env, ...env };
+  for (const k of Object.keys(e)) if (k.toLowerCase() === "psmodulepath") delete e[k];
+  return e;
+}
+
 export function executerPowerShell(nom, env = {}, { delaiMs = 30000 } = {}) {
   return new Promise((resolve) => {
     execFile("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", SCRIPTS[nom]], {
-      env: { ...process.env, ...env }, windowsHide: true, timeout: delaiMs, maxBuffer: 32 * 1024 * 1024, encoding: "latin1",
+      env: environnementPowerShell(env), windowsHide: true, timeout: delaiMs, maxBuffer: 32 * 1024 * 1024, encoding: "latin1",
     }, (err, stdout) => {
       const i = stdout ? stdout.lastIndexOf("@@JG@@") : -1;
       if (i < 0) return resolve({ ok: false, code: err?.killed ? "delai_depasse" : "powershell_indisponible", detail: err ? String(err.code || "").slice(0, 80) : "sortie vide" });

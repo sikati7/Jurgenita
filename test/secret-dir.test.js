@@ -190,6 +190,14 @@ test("POSIX (simulé) : propriétaire étranger, lien symbolique, élément inat
   const l = sd.analyserArbrePosix({ racine: "/s", vue: vueSimulee({ "/s": { mode: 0o777, uid: 1000, type: "l", cible: "/x" }, "/x": { mode: 0o755, uid: 1000, type: "d" } }), moi: MOI, plateforme: "linux", acl: ACL_AUCUNE });
   assert.ok(l.problemes.some((p) => p.code === "lien_symbolique" && p.niveau === "incertain"));
   assert.deepEqual(l.aCorriger, [], "aucune correction à travers un lien");
+  // Élément inaccessible : à vous (droits à rendre) ou à un autre compte, root compris (propriété à reprendre).
+  for (const [uid, etranger] of [[1000, false], [0, true]]) {
+    const v = vueSimulee({ "/s": { mode: 0o000, uid, type: "d" } });
+    v.access = () => false;
+    const r = sd.analyserArbrePosix({ racine: "/s", vue: v, moi: MOI, plateforme: "linux", acl: ACL_AUCUNE });
+    assert.ok(r.problemes.some((p) => p.code === "acces_refuse" && p.acces));
+    assert.equal(r.inaccessiblesEtrangers, etranger, `uid ${uid}`);
+  }
 });
 
 test("POSIX (simulé) : chaîne sûre (dossier personnel)", () => {
@@ -317,7 +325,7 @@ test("Windows (simulé) : droits effectifs calculés comme Windows", () => {
   assert.equal(win.droitsEffectifs({ nulle: true }, j), DROIT.CONTROLE_TOTAL, "liste nulle : tout est permis");
 });
 
-test("Windows (simulé) : jeton — whoami et .NET concordants (certain), discordants ou illisibles (incertain)", () => {
+test("Windows (simulé) : jeton — lectures réunies (certain) ; illisible ou utilisateur différent (incertain)", () => {
   const net = { utilisateur: U, actifs: [SID.TOUT_LE_MONDE, SID.UTILISATEURS], refus: [SID.ADMINISTRATEURS], refusConnu: true };
   const user = `"PC\\moi","${U}"\r\n`;
   const groupes = [`"Tout le monde","Groupe bien connu","${SID.TOUT_LE_MONDE}","Groupe obligatoire, Activé par défaut, Groupe activé"`, `"BUILTIN\\Utilisateurs","Alias","${SID.UTILISATEURS}","Groupe obligatoire"`, `"BUILTIN\\Administrateurs","Alias","${SID.ADMINISTRATEURS}","Groupe utilisé uniquement pour refuser"`, `"Étiquette obligatoire\\Niveau obligatoire moyen","Étiquette","S-1-16-8192",""`, `"AUTORITE NT\\Session","Groupe","S-1-5-5-0-123","Groupe obligatoire"`].join("\r\n");
@@ -325,7 +333,12 @@ test("Windows (simulé) : jeton — whoami et .NET concordants (certain), discor
   assert.equal(j.certain, true, j.problemes.join(";"));
   assert.ok(j.refus.includes(SID.ADMINISTRATEURS));
   assert.ok(!j.tous.includes("S-1-16-8192") && !j.tous.includes("S-1-5-5-0-123"));
-  assert.equal(win.construireJeton({ ...net, actifs: [...net.actifs, "S-1-5-32-999"] }, user, groupes).certain, false, "désaccord");
+  // Groupe lu par .NET mais non affiché par whoami (cas réel : groupe local « Aucun », RID 513) : réuni, pas une incertitude.
+  const aucun = "S-1-5-21-1111111111-2222222222-3333333333-513";
+  const j2 = win.construireJeton({ ...net, actifs: [...net.actifs, aucun] }, user, groupes);
+  assert.equal(j2.certain, true, j2.problemes.join(";"));
+  assert.ok(j2.tous.includes(aucun) && j2.actifs.includes(aucun));
+  assert.match(j2.notes.join(), /513/);
   assert.equal(win.construireJeton(net, null, groupes).certain, false, "whoami illisible");
   assert.equal(win.construireJeton(net, `"PC\\autre","${AUTRE}"`, groupes).certain, false, "utilisateur différent");
 });
@@ -694,6 +707,8 @@ test("POSIX (réel) : dossier interdit — démarrage normal, 409 immédiat (pas
     assert.match(r.corps.erreur, /Accès refusé/);
     assert.doesNotMatch(r.corps.erreur, /verrouill/);
     assert.equal(mode(i.secrets), 0o000, "aucun droit ajouté automatiquement");
+    assert.ok(p.actions.some((x) => x.includes("chmod -R u+rwX")), "le dossier est à vous : rendre ses droits au propriétaire");
+    assert.ok(!p.actions.some((x) => x.includes("chown")), JSON.stringify(p.actions));
   } finally { srv.arreter(); fs.chmodSync(i.secrets, 0o700); }
 });
 

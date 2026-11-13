@@ -3,7 +3,7 @@
 Il y a deux sortes de connexions :
 
 - **Les vôtres** (clé Claude, Gmail, Agenda, Telegram) se règlent dans le fichier **`.env`** du dossier `jurgenita` (copiez `.env.example` en `.env`). Après chaque modification du `.env`, **relancez Jurgenita** : `Ctrl + C` puis `npm.cmd start`.
-- **Celles de chaque marque** (Instagram, Facebook, Meta Ads, avis Google, TikTok, LinkedIn) se saisissent dans **Profil → Accès de la marque**, après avoir choisi la marque en haut à droite. Elles sont gardées dans `data/secrets/`, hors de Git. Pour la première marque, vous pouvez aussi les mettre dans le `.env`.
+- **Celles de chaque marque** (Instagram, Facebook, Meta Ads, avis Google, TikTok, LinkedIn) se saisissent dans **Profil → Accès de la marque**, après avoir choisi la marque en haut à droite. Elles sont gardées dans `data/secrets/`, hors de Git, dans un dossier réservé à votre compte (voir [la section 9](#9-protection-du-dossier-des-secrets)). Pour la première marque, vous pouvez aussi les mettre dans le `.env`.
 
 L'onglet **Profil → Connexions** indique ce qui est branché pour la marque active.
 
@@ -147,3 +147,61 @@ Jurgenita lit les abonnés et les vues des 10 dernières vidéos.
 Dans **Calendrier**, le bouton **Lien de validation pour le client** copie un lien secret propre à la marque. Le client y voit les contenus « en validation » et peut les **valider** ou **demander une modification**, avec un commentaire. Vous êtes prévenu sur Telegram.
 
 **Important** : Jurgenita tourne sur votre ordinateur, donc ce lien ne fonctionne pour le client qu'une fois Jurgenita **hébergée en ligne**. En attendant, vous pouvez l'ouvrir vous-même pour montrer l'écran au client.
+
+---
+
+## 9. Protection du dossier des secrets
+
+À chaque démarrage, Jurgenita vérifie que le dossier `data/secrets/` (accès des marques, jeton Google) n'est accessible qu'à vous. Le résultat s'affiche dans le terminal et dans **Profil → Connexions**, sur la ligne « Protection des secrets » :
+
+| Indication | Signification |
+| --- | --- |
+| **Protégée** | Rien à faire. |
+| **Corrigée** | Des droits trop larges ont été resserrés au démarrage. L'état d'origine est sauvegardé. |
+| **À vérifier** | Situation incertaine : rien n'a été modifié. Suivez « Que faire ». |
+| **Insuffisante** | D'autres comptes de l'ordinateur peuvent lire vos accès ou remplacer le dossier. Suivez « Que faire ». |
+| **Accès refusé** | Jurgenita elle-même ne peut pas lire ses accès : les connexions des marques et Google sont indisponibles, et l'enregistrement des accès est refusé. |
+
+**Ce que fait la correction automatique**
+
+- **Windows** : elle coupe l'héritage du dossier `data\secrets` et n'y laisse que votre compte, SYSTEM et Administrateurs (contrôle total). Le contenu hérite de cette protection.
+- **Linux et macOS** : elle retire les droits du groupe et des autres comptes (dossiers `700`, fichiers `600`). Un fichier en lecture seule le reste : `444` devient `400`.
+- Elle ne fait que **resserrer**. Elle n'ajoute jamais un droit et ne modifie jamais les dossiers parents ni le fichier `.env` : celui-ci est seulement vérifié, et la commande conseillée s'affiche, à lancer vous-même.
+- Elle s'arrête sans rien modifier dans ces cas :
+  - un autre compte peut supprimer, renommer ou remplacer un dossier parent, ou en changer les droits. Sous Windows : droits DELETE, DELETE_CHILD, WRITE_DAC ou WRITE_OWNER. Sous Linux et macOS : dossier modifiable par d'autres comptes sans bit sticky, groupe partagé avec d'autres comptes, ou ACL ;
+  - une règle de refus, un lien ou une jonction se trouve dans le dossier des secrets ;
+  - l'analyse est incertaine : membres d'un groupe inconnus, annuaire réseau, autorisations illisibles.
+- Un dossier partagé avec bit sticky (comme `/tmp`) n'est pas jugé vulnérable en soi : seuls les comptes qui ont réellement le droit de remplacer le dossier comptent.
+
+**Le cas le plus courant sous Windows** : si le dossier `jurgenita` est placé directement sous `C:\` (par exemple `C:\jurgenita`), il hérite de « Utilisateurs authentifiés : Modification ». Tout autre compte de l'ordinateur pourrait alors remplacer `data`. Jurgenita affiche « Insuffisante » et ne corrige rien. Pour régler le problème, **clonez à nouveau le projet dans votre profil** (`C:\Users\<vous>\…`), puis recopiez-y `.env` et `data\`. Un simple déplacement sur le même disque conserve les anciennes autorisations.
+
+**Vérifier sans rien modifier**
+
+- Windows (PowerShell) : `$env:JURGENITA_SECRETS_PERMISSIONS="verifier"; npm.cmd start`
+- Linux, macOS : `JURGENITA_SECRETS_PERMISSIONS=verifier npm start`
+
+Toute valeur autre que `corriger` (par défaut) ou `verifier` est traitée comme `verifier`.
+
+**Voir les droits vous-même**
+
+- Windows : `icacls data\secrets /T`
+- Linux : `ls -laR data/secrets`
+- macOS : `ls -laeR data/secrets`
+
+**Revenir en arrière**
+
+Avant chaque correction, Jurgenita écrit une sauvegarde des droits d'origine dans `data/secret-permissions-backups/`. Ce dossier est hors de Git et réservé à votre compte. Il ne contient aucun secret, seulement des droits. Pour restaurer :
+
+```
+node scripts/restaurer-droits-secrets.mjs data/secret-permissions-backups/<fichier>.json
+node scripts/restaurer-droits-secrets.mjs data/secret-permissions-backups/<fichier>.json --appliquer
+```
+
+- La première commande affiche un aperçu, sans rien modifier.
+- La seconde restaure les droits (le contenu d'abord, le dossier principal en dernier) et les vérifie.
+- Le script refuse par prudence (code 4) si un autre compte peut modifier le dossier des sauvegardes ou l'un de ses dossiers parents.
+- Sous Windows, `icacls data\secrets /reset /T /C /Q` rétablit simplement les autorisations héritées du dossier parent.
+
+**Emplacement des sauvegardes** : par défaut, à côté du dossier des secrets. Vous pouvez le changer avec `JURGENITA_SECRETS_BACKUP_DIR`, mais jamais à l'intérieur du dossier des secrets, ni l'inverse : la correction serait alors interrompue.
+
+**Disques particuliers** : sur un disque réseau, FAT ou exFAT (clé USB, par exemple), les droits ne peuvent pas être garantis. Jurgenita le signale sans rien corriger. Sous WSL, un projet placé sur `/mnt/c` ne garde pas les droits Linux : placez-le dans le système de fichiers Linux (`~/…`).

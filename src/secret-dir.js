@@ -297,7 +297,8 @@ export function analyserChainePosix({ sensible, vue, moi, groupe, acl, plateform
 // Dossier sensible et son contenu (Linux, macOS).
 export function analyserArbrePosix({ racine, vue, moi, plateforme, acl }) {
   const problemes = [];
-  const res = { existe: false, aCorriger: [], problemes, inaccessibles: [], exposition: [] };
+  // inaccessiblesEtrangers : un élément inaccessible appartient à un autre compte (root compris).
+  const res = { existe: false, aCorriger: [], problemes, inaccessibles: [], inaccessiblesEtrangers: false, exposition: [] };
   const s = vue.lstat(racine);
   if (!s) return res;
   res.existe = true;
@@ -318,7 +319,7 @@ export function analyserArbrePosix({ racine, vue, moi, plateforme, acl }) {
       res.exposition.push(chemin);
     }
     const besoin = st.dossier ? fs.constants.R_OK | fs.constants.W_OK | fs.constants.X_OK : fs.constants.R_OK;
-    if (!vue.access(chemin, besoin)) res.inaccessibles.push(chemin);
+    if (!vue.access(chemin, besoin)) { res.inaccessibles.push(chemin); if (st.uid !== moi.uid) res.inaccessiblesEtrangers = true; }
     if (plateforme === "darwin") {
       const a = acl(chemin);
       if (!a.lisible) problemes.push({ niveau: "incertain", code: "acl_incertaine", message: `${chemin} : ${a.raison}.` });
@@ -329,12 +330,12 @@ export function analyserArbrePosix({ racine, vue, moi, plateforme, acl }) {
     }
     if (st.dossier && vue.access(chemin, fs.constants.R_OK | fs.constants.X_OK)) {
       let noms = [];
-      try { noms = vue.readdir(chemin); } catch { res.inaccessibles.push(chemin); }
+      try { noms = vue.readdir(chemin); } catch { res.inaccessibles.push(chemin); if (st.uid !== moi.uid) res.inaccessiblesEtrangers = true; }
       for (const n of noms) {
         const p = px.join(chemin, n);
         const sp = vue.lstat(p);
         if (sp && !sp.erreur) pile.push({ chemin: p, s: sp });
-        else if (sp?.erreur) { res.inaccessibles.push(p); }
+        else if (sp?.erreur) { res.inaccessibles.push(p); res.inaccessiblesEtrangers = true; }
       }
     }
   }
@@ -508,12 +509,12 @@ async function protegerPosix(r, { racine, sauvegardes, mode, plateforme, fsImpl,
     r.etat = "verification_seule";
     if (expose) ajouter(r, arbre.aCorriger.map((c) => ({ niveau: "dangereux", code: "droits_trop_larges", message: `${afficher(c.chemin)} est accessible à d'autres comptes (droits ${octal(c.avant)}) ; correction possible : ${octal(c.apres)}.` })));
     if (expose) r.actions.push("Relancez Jurgenita sans JURGENITA_SECRETS_PERMISSIONS=verifier pour resserrer automatiquement ces droits.");
-    return conseilsPosix(r, chaines, moi);
+    return conseilsPosix(r, chaines, moi, arbre);
   }
   if (!chaineSure || bloquant) {
     r.etat = "correction_interrompue";
     if (expose) ajouter(r, arbre.aCorriger.map((c) => ({ niveau: "dangereux", code: "droits_trop_larges", message: `${afficher(c.chemin)} reste accessible à d'autres comptes (droits ${octal(c.avant)}).` })));
-    return conseilsPosix(r, chaines, moi);
+    return conseilsPosix(r, chaines, moi, arbre);
   }
   // Création du dossier des secrets, directement protégé.
   if (!arbre.existe) {
@@ -522,18 +523,18 @@ async function protegerPosix(r, { racine, sauvegardes, mode, plateforme, fsImpl,
     } catch (err) {
       r.etat = "correction_interrompue";
       ajouter(r, [{ niveau: "dangereux", code: err.code === "EACCES" ? "acces_refuse" : "creation_impossible", acces: err.code === "EACCES", message: `Création de ${afficher(racine)} impossible (${err.code}).` }]);
-      return conseilsPosix(r, chaines, moi);
+      return conseilsPosix(r, chaines, moi, arbre);
     }
     arbre = analyserArbrePosix({ racine, vue, moi, plateforme, acl });
     ajouter(r, arbre.problemes);
     if (arbre.problemes.some((p) => p.bloquant) || arbre.aCorriger.length) {
       r.etat = "correction_interrompue";
-      return conseilsPosix(r, chaines, moi);
+      return conseilsPosix(r, chaines, moi, arbre);
     }
   }
   if (!arbre.aCorriger.length) {
     r.etat = r.acces === "refuse" ? "correction_interrompue" : "protege";
-    return conseilsPosix(r, chaines, moi);
+    return conseilsPosix(r, chaines, moi, arbre);
   }
   // 1. Dossier des sauvegardes : créé ou resserré (lui aussi, uniquement par resserrement).
   const sv = await preparerSauvegardesPosix({ sauvegardes, vue, moi, plateforme, acl, fsImpl });
@@ -541,7 +542,7 @@ async function protegerPosix(r, { racine, sauvegardes, mode, plateforme, fsImpl,
     r.etat = "correction_interrompue";
     ajouter(r, sv.problemes);
     ajouter(r, arbre.aCorriger.map((c) => ({ niveau: "dangereux", code: "droits_trop_larges", message: `${afficher(c.chemin)} reste accessible à d'autres comptes (droits ${octal(c.avant)}).` })));
-    return conseilsPosix(r, chaines, moi);
+    return conseilsPosix(r, chaines, moi, arbre);
   }
   r.corrections.push(...sv.corrections);
   // 2. Sauvegarde des droits actuels, avant toute modification.
@@ -556,7 +557,7 @@ async function protegerPosix(r, { racine, sauvegardes, mode, plateforme, fsImpl,
   } catch (err) {
     r.etat = "correction_interrompue";
     ajouter(r, [{ niveau: "incertain", code: "sauvegarde_impossible", message: `Sauvegarde des droits impossible (${err.code || err.name}) : rien n'a été modifié.` }]);
-    return conseilsPosix(r, chaines, moi);
+    return conseilsPosix(r, chaines, moi, arbre);
   }
   r.sauvegarde = afficher(fichier);
   // 3. Resserrement. Pas de retour automatique vers des droits plus larges :
@@ -582,7 +583,7 @@ async function protegerPosix(r, { racine, sauvegardes, mode, plateforme, fsImpl,
     }
   }
   if (r.etat !== "correction_interrompue") r.etat = r.problemes.some((p) => p.code === "chmod_sans_effet") ? "correction_interrompue" : "corrige";
-  return conseilsPosix(r, chaines, moi);
+  return conseilsPosix(r, chaines, moi, arbre);
 }
 
 async function preparerSauvegardesPosix({ sauvegardes, vue, moi, plateforme, acl, fsImpl }) {
@@ -602,9 +603,12 @@ async function preparerSauvegardesPosix({ sauvegardes, vue, moi, plateforme, acl
   return { ok: true, corrections };
 }
 
-function conseilsPosix(r, chaines, moi) {
+function conseilsPosix(r, chaines, moi, arbre) {
   const codes = new Set(r.problemes.map((p) => p.code));
-  if (codes.has("proprietaire_etranger") || codes.has("acces_refuse")) r.actions.push(`Rendez-vous propriétaire du dossier des secrets : sudo chown -R ${moi.nom} ${afficher(secretsRoot())} (commande à lancer vous-même).`);
+  const racine = afficher(secretsRoot());
+  if (codes.has("proprietaire_etranger") || arbre?.inaccessiblesEtrangers) r.actions.push(`Rendez-vous propriétaire du dossier des secrets : sudo chown -R ${moi.nom} ${racine} (commande à lancer vous-même).`);
+  else if (codes.has("acces_refuse") && arbre?.existe) r.actions.push(`Rendez à votre compte ses propres droits sur le dossier des secrets : chmod -R u+rwX ${racine} (commande à lancer vous-même ; elle ne donne aucun droit aux autres comptes).`);
+  else if (codes.has("acces_refuse")) r.actions.push(`Votre compte ne peut pas créer ${racine} : vérifiez les droits du dossier qui doit le contenir (ls -ld ${afficher(path.dirname(secretsRoot()))}), sans les élargir aux autres comptes.`);
   if ([...codes].some((c) => c.startsWith("parent_"))) r.actions.push("Placez le dossier jurgenita dans votre dossier personnel, ou retirez aux autres comptes le droit d'écrire dans les dossiers parents signalés (par exemple chmod o-w,g-w <dossier>) : Jurgenita ne modifie jamais les dossiers parents.");
   if (codes.has("groupe_incertain") || codes.has("acl_incertaine")) r.actions.push("Vérifiez qui peut écrire dans les dossiers parents signalés (ls -ld, getfacl), puis relancez Jurgenita.");
   if (r.env?.action) r.actions.push(r.env.action);
