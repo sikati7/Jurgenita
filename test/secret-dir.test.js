@@ -522,6 +522,20 @@ test("Windows (simulé) : diagnostic en fin de reprise — refus permanent, verr
   assert.equal(await win.diagnostiquerAcces("C:\\x", { ps: async () => ({ ok: false }), whoami: who }), "incertain");
 });
 
+test("outils Windows : chemins complets sous SystemRoot, jamais résolus par le PATH", () => {
+  const avant = { SystemRoot: process.env.SystemRoot, windir: process.env.windir };
+  try {
+    process.env.SystemRoot = "D:\\Win";
+    assert.equal(win.cheminWhoami(), "D:\\Win\\System32\\whoami.exe");
+    assert.equal(win.cheminPowerShell(), "D:\\Win\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+    delete process.env.SystemRoot;
+    delete process.env.windir;
+    assert.equal(win.cheminWhoami(), "C:\\Windows\\System32\\whoami.exe");
+  } finally {
+    for (const [k, v] of Object.entries(avant)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
+  }
+});
+
 test("scripts PowerShell : aucun guillemet double, aucun accent grave, ASCII, taille compatible avec la ligne de commande", () => {
   for (const [nom, script] of Object.entries(win.SCRIPTS)) {
     assert.equal((script.match(/"/g) || []).length, 0, nom);

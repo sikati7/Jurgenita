@@ -276,7 +276,7 @@ const INVITES = "S-1-5-32-546";
 const PLEIN = 2032127; // contrôle total
 
 function psSync(script, env = {}) {
-  const r = spawnSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", windowsHide: true, env: win.environnementPowerShell(env) });
+  const r = spawnSync(win.cheminPowerShell(), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", windowsHide: true, env: win.environnementPowerShell(env) });
   assert.equal(r.status, 0, `PowerShell : ${r.stderr}`);
   return r.stdout;
 }
@@ -357,6 +357,12 @@ const psAvecPanne = (visee) => async (nom, env) => {
   }
   return win.executerPowerShell(nom, env);
 };
+
+test("Windows : whoami et PowerShell appelés par leur chemin complet dans System32 (pas un homonyme du PATH)", onlyWindows, async () => {
+  for (const p of [win.cheminWhoami(), win.cheminPowerShell()]) assert.ok(fs.existsSync(p), p);
+  const u = await win.executerWhoami(["/user", "/fo", "csv", "/nh"]);
+  assert.match(String(u), /S-1-5-/, "whoami de Windows (SID affiché)");
+});
 
 test("Windows (ACL réelle) : premier démarrage → dossier des secrets protégé exactement (vous, SYSTEM, Administrateurs ; héritage coupé)", onlyWindows, async () => {
   const base = newDir("acl-neuf");

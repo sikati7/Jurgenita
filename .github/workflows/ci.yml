@@ -39,7 +39,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         env:
-          TESTS_WINDOWS_ATTENDUS: 20
+          TESTS_WINDOWS_ATTENDUS: 21
         run: |
           node --test test/windows.test.js | tee windows-tests.txt
           grep -q "^# tests ${TESTS_WINDOWS_ATTENDUS}$" windows-tests.txt

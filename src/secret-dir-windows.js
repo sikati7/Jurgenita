@@ -299,6 +299,13 @@ Out-Jg $r
 
 export const SCRIPTS = { inspecter: SCRIPT_INSPECTER, appliquer: SCRIPT_APPLIQUER, diagnostiquer: SCRIPT_DIAGNOSTIQUER };
 
+// Outils système appelés par leur chemin complet, jamais par le PATH : pas
+// d'homonyme (Git Bash fournit son propre whoami) ni de programme placé plus
+// tôt dans le PATH pour fausser le jeton ou les autorisations lues.
+const racineSysteme = () => process.env.SystemRoot || process.env.windir || "C:\\Windows";
+export const cheminPowerShell = () => wpath.join(racineSysteme(), "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+export const cheminWhoami = () => wpath.join(racineSysteme(), "System32", "whoami.exe");
+
 // Environnement de Windows PowerShell 5.1 : sans le PSModulePath hérité (lancé
 // depuis PowerShell 7, il désigne des modules incompatibles avec la version 5.1).
 export function environnementPowerShell(env = {}) {
@@ -309,7 +316,7 @@ export function environnementPowerShell(env = {}) {
 
 export function executerPowerShell(nom, env = {}, { delaiMs = 30000 } = {}) {
   return new Promise((resolve) => {
-    execFile("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", SCRIPTS[nom]], {
+    execFile(cheminPowerShell(), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", SCRIPTS[nom]], {
       env: environnementPowerShell(env), windowsHide: true, timeout: delaiMs, maxBuffer: 32 * 1024 * 1024, encoding: "latin1",
     }, (err, stdout) => {
       const i = stdout ? stdout.lastIndexOf("@@JG@@") : -1;
@@ -321,7 +328,7 @@ export function executerPowerShell(nom, env = {}, { delaiMs = 30000 } = {}) {
 
 export function executerWhoami(args, { delaiMs = 15000 } = {}) {
   return new Promise((resolve) => {
-    execFile("whoami", args, { windowsHide: true, timeout: delaiMs, encoding: "latin1" }, (err, stdout) => resolve(err ? null : stdout));
+    execFile(cheminWhoami(), args, { windowsHide: true, timeout: delaiMs, encoding: "latin1" }, (err, stdout) => resolve(err ? null : stdout));
   });
 }
 
