@@ -27,6 +27,7 @@ function fragments(text, min = 5) {
 async function startServer({ token = null, brandsJson = null } = {}) {
   const runtime = newDir("rt");
   const secrets = newDir("sec");
+  const sauvegardes = newDir("sauvegardes"); // sauvegardes de droits (2b.4) propres à ce serveur
   if (token !== null) fs.writeFileSync(path.join(secrets, "google-token.json"), token);
   if (brandsJson !== null) fs.writeFileSync(path.join(runtime, "brands.json"), brandsJson);
   const child = spawn(process.execPath, ["server.js"], {
@@ -34,7 +35,7 @@ async function startServer({ token = null, brandsJson = null } = {}) {
     env: {
       ...process.env,
       PORT: "0", JURGENITA_DEMO: "1", JURGENITA_NO_SCHEDULER: "1",
-      JURGENITA_RUNTIME_DIR: runtime, JURGENITA_SECRETS_DIR: secrets,
+      JURGENITA_RUNTIME_DIR: runtime, JURGENITA_SECRETS_DIR: secrets, JURGENITA_SECRETS_BACKUP_DIR: sauvegardes,
       GOOGLE_CLIENT_ID: "faux-client.apps.googleusercontent.com", GOOGLE_CLIENT_SECRET: "faux-secret",
       GOOGLE_BUSINESS_LOCATION: "accounts/1/locations/2",
       META_ACCESS_TOKEN: "", TELEGRAM_BOT_TOKEN: "", TIKTOK_ACCESS_TOKEN: "", LINKEDIN_ACCESS_TOKEN: "",

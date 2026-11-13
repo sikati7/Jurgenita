@@ -12,6 +12,8 @@ import { fileURLToPath } from "node:url";
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const runtimeDir = fs.mkdtempSync(path.join(os.tmpdir(), "jurgenita-secu-"));
 const secretsDir = fs.mkdtempSync(path.join(os.tmpdir(), "jurgenita-secu-secrets-"));
+// Sauvegardes de droits (2b.4) : dossier propre à ce serveur de test, supprimé à la fin, même en cas d'échec.
+const sauvegardesDir = fs.mkdtempSync(path.join(os.tmpdir(), "jurgenita-secu-sauvegardes-"));
 const EVIL = "https://site-malveillant.example";
 let server;
 let port;
@@ -25,6 +27,7 @@ before(async () => {
       JURGENITA_DEMO: "1",
       JURGENITA_RUNTIME_DIR: runtimeDir,
       JURGENITA_SECRETS_DIR: secretsDir,
+      JURGENITA_SECRETS_BACKUP_DIR: sauvegardesDir,
       JURGENITA_NO_SCHEDULER: "1",
       JURGENITA_ALLOWED_HOSTS: "",
       GOOGLE_CLIENT_ID: "", GOOGLE_CLIENT_SECRET: "", META_ACCESS_TOKEN: "", TELEGRAM_BOT_TOKEN: "",
@@ -44,6 +47,7 @@ after(() => {
   server.kill();
   fs.rmSync(runtimeDir, { recursive: true, force: true });
   fs.rmSync(secretsDir, { recursive: true, force: true });
+  fs.rmSync(sauvegardesDir, { recursive: true, force: true });
 });
 
 // Requête HTTP brute : contrairement à fetch, elle permet de choisir l'en-tête Host,

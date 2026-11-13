@@ -266,6 +266,7 @@ for (const name of ["unlinkSync", "rmSync"]) {
 async function startServer() {
   const runtime = newDir("rt");
   const secrets = newDir("sec");
+  const sauvegardes = newDir("sauvegardes"); // sauvegardes de droits (2b.4) propres à ce serveur
   const ctl = newDir("ctl");
   const preload = path.join(ctl, "verrous.mjs");
   fs.writeFileSync(preload, PRELOAD);
@@ -276,7 +277,7 @@ async function startServer() {
     cwd: root,
     env: {
       ...process.env, PORT: "0", JURGENITA_DEMO: "1", JURGENITA_NO_SCHEDULER: "1",
-      JURGENITA_RUNTIME_DIR: runtime, JURGENITA_SECRETS_DIR: secrets,
+      JURGENITA_RUNTIME_DIR: runtime, JURGENITA_SECRETS_DIR: secrets, JURGENITA_SECRETS_BACKUP_DIR: sauvegardes,
       TEST_LOCK_TARGET: `${path.sep}kora.json`, TEST_LOCK_WRITE: lockWrite, TEST_LOCK_READ: lockRead, TEST_LOCK_DELETE: lockDelete,
       META_ACCESS_TOKEN: "", TIKTOK_ACCESS_TOKEN: "", LINKEDIN_ACCESS_TOKEN: "", TELEGRAM_BOT_TOKEN: "", GOOGLE_CLIENT_ID: "", GOOGLE_CLIENT_SECRET: "",
     },
@@ -606,7 +607,7 @@ process.stdout.write("@@resultat " + JSON.stringify(out) + "\\n");
 
 // Lance le script de masquage ; `lock`/`unlock` posent et lèvent le verrou
 // (simulé ici, réel sous Windows dans windows.test.js).
-async function runMaskingScenario({ preload, lock, unlock, secrets, runtime, env = {} }) {
+async function runMaskingScenario({ preload, lock, unlock, secrets, runtime, sauvegardes, env = {} }) {
   const file = path.join(secrets, "brands", "kora.json");
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify({ tiktok_token: TIKTOK, linkedin_token: LINKEDIN, linkedin_org_id: "org-1" }));
@@ -614,7 +615,7 @@ async function runMaskingScenario({ preload, lock, unlock, secrets, runtime, env
   const child = spawn(process.execPath, args, {
     cwd: root,
     env: { ...process.env, ...env, REDACT_URL: srcUrl("redact.js"), BRANDS_URL: srcUrl("brands.js"), SECRET_FILE: file, T1: TIKTOK, T2: LINKEDIN,
-      JURGENITA_SECRETS_DIR: secrets, JURGENITA_RUNTIME_DIR: runtime, TIKTOK_ACCESS_TOKEN: "", LINKEDIN_ACCESS_TOKEN: "", META_ACCESS_TOKEN: "" },
+      JURGENITA_SECRETS_DIR: secrets, JURGENITA_SECRETS_BACKUP_DIR: sauvegardes, JURGENITA_RUNTIME_DIR: runtime, TIKTOK_ACCESS_TOKEN: "", LINKEDIN_ACCESS_TOKEN: "", META_ACCESS_TOKEN: "" },
   });
   let stdout = "";
   let stderr = "";
@@ -656,7 +657,7 @@ test("masquage : jetons TikTok et LinkedIn toujours masqués pendant un verrou d
   fs.writeFileSync(preload, PRELOAD);
   const marker = path.join(ctl, "verrou-lecture");
   const run = await runMaskingScenario({
-    preload, secrets: newDir("masque-sec"), runtime: newDir("masque-rt"),
+    preload, secrets: newDir("masque-sec"), runtime: newDir("masque-rt"), sauvegardes: newDir("masque-sauvegardes"),
     env: { TEST_LOCK_TARGET: `${path.sep}kora.json`, TEST_LOCK_READ: marker },
     lock: () => fs.writeFileSync(marker, ""), unlock: () => fs.rmSync(marker, { force: true }),
   });

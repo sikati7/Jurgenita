@@ -117,6 +117,7 @@ test("arrêt forcé pendant des écritures : le fichier contient toujours une ve
 test("marques : un fichier illisible n'est jamais écrasé, les autres marques fonctionnent", () => {
   const runtime = newDir("runtime");
   const secrets = newDir("secrets");
+  const sauvegardes = newDir("sauvegardes"); // sauvegardes de droits (2b.4) propres à ce processus
   const script = `
     const brands = await import(${JSON.stringify(srcUrl("brands.js"))});
     const fs = await import("node:fs");
@@ -150,7 +151,7 @@ test("marques : un fichier illisible n'est jamais écrasé, les autres marques f
   `;
   const run = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
     encoding: "utf8",
-    env: { ...process.env, JURGENITA_RUNTIME_DIR: runtime, JURGENITA_SECRETS_DIR: secrets, META_ACCESS_TOKEN: "", META_PAGE_ID: "", META_IG_USER_ID: "", LINKEDIN_ACCESS_TOKEN: "", LINKEDIN_ORG_ID: "" },
+    env: { ...process.env, JURGENITA_RUNTIME_DIR: runtime, JURGENITA_SECRETS_DIR: secrets, JURGENITA_SECRETS_BACKUP_DIR: sauvegardes, META_ACCESS_TOKEN: "", META_PAGE_ID: "", META_IG_USER_ID: "", LINKEDIN_ACCESS_TOKEN: "", LINKEDIN_ORG_ID: "" },
   });
   assert.equal(run.status, 0, run.stderr);
   const out = JSON.parse(run.stdout);
@@ -178,6 +179,7 @@ test("marques : un fichier illisible n'est jamais écrasé, les autres marques f
 test("serveur : démarre avec un fichier d'accès abîmé, refuse de l'écraser (409) et reste utilisable", async () => {
   const runtime = newDir("srv-runtime");
   const secrets = newDir("srv-secrets");
+  const sauvegardes = newDir("srv-sauvegardes"); // sauvegardes de droits (2b.4) propres à ce serveur
   fs.mkdirSync(path.join(secrets, "brands"), { recursive: true });
   const broken = path.join(secrets, "brands", "kora.json");
   fs.writeFileSync(broken, "{ tronqué");
@@ -185,7 +187,7 @@ test("serveur : démarre avec un fichier d'accès abîmé, refuse de l'écraser 
   const before = fs.readFileSync(broken);
   const server = spawn(process.execPath, ["server.js"], {
     cwd: root,
-    env: { ...process.env, PORT: "0", JURGENITA_DEMO: "1", JURGENITA_NO_SCHEDULER: "1", JURGENITA_RUNTIME_DIR: runtime, JURGENITA_SECRETS_DIR: secrets, META_ACCESS_TOKEN: "", TELEGRAM_BOT_TOKEN: "" },
+    env: { ...process.env, PORT: "0", JURGENITA_DEMO: "1", JURGENITA_NO_SCHEDULER: "1", JURGENITA_RUNTIME_DIR: runtime, JURGENITA_SECRETS_DIR: secrets, JURGENITA_SECRETS_BACKUP_DIR: sauvegardes, META_ACCESS_TOKEN: "", TELEGRAM_BOT_TOKEN: "" },
   });
   let logs = "";
   server.stderr.on("data", (c) => (logs += c));

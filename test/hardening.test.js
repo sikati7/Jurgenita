@@ -18,6 +18,8 @@ const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const srcUrl = (...parts) => pathToFileURL(path.join(root, "src", ...parts)).href;
 const runtimeDir = fs.mkdtempSync(path.join(os.tmpdir(), "jurgenita-etape1-"));
 const secretsDir = fs.mkdtempSync(path.join(os.tmpdir(), "jurgenita-etape1-secrets-"));
+// Sauvegardes de droits (2b.4) : dossier propre à ce serveur de test, supprimé à la fin, même en cas d'échec.
+const sauvegardesDir = fs.mkdtempSync(path.join(os.tmpdir(), "jurgenita-etape1-sauvegardes-"));
 // Secrets factices : ils ne doivent jamais apparaître dans un journal ni une réponse.
 const FAKE_META = "EAAFauxJetonMetaPourLesTests1234567890";
 const FAKE_ANTHROPIC = "sk-ant-faux-jeton-pour-les-tests-0123456789";
@@ -34,6 +36,7 @@ before(async () => {
       JURGENITA_DEMO: "1",
       JURGENITA_RUNTIME_DIR: runtimeDir,
       JURGENITA_SECRETS_DIR: secretsDir,
+      JURGENITA_SECRETS_BACKUP_DIR: sauvegardesDir,
       JURGENITA_NO_SCHEDULER: "1",
       // Identifiants Google factices : seulement pour activer /auth/google,
       // aucun appel n'est fait à Google dans ces tests.
@@ -59,6 +62,7 @@ after(() => {
   server.kill();
   fs.rmSync(runtimeDir, { recursive: true, force: true });
   fs.rmSync(secretsDir, { recursive: true, force: true });
+  fs.rmSync(sauvegardesDir, { recursive: true, force: true });
 });
 
 // Requête brute : corps en plusieurs morceaux possible, en-têtes au choix.

@@ -57,6 +57,7 @@ function corruptions() {
 function runWithBrokenBrands(contents) {
   const runtime = newDir("rt");
   const secrets = newDir("sec");
+  const sauvegardes = newDir("sauvegardes"); // sauvegardes de droits (2b.4) propres à ce processus
   fs.mkdirSync(path.join(secrets, "brands"));
   const ids = contents.map((_, i) => `marque-${i}`);
   fs.writeFileSync(path.join(runtime, "brands.json"), JSON.stringify(ids.map((id) => ({ id, nom: id, couleur: "#000" }))));
@@ -72,7 +73,7 @@ function runWithBrokenBrands(contents) {
   const run = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
     encoding: "utf8",
     timeout: 60_000,
-    env: { ...process.env, JURGENITA_RUNTIME_DIR: runtime, JURGENITA_SECRETS_DIR: secrets, META_ACCESS_TOKEN: "", TIKTOK_ACCESS_TOKEN: "", LINKEDIN_ACCESS_TOKEN: "" },
+    env: { ...process.env, JURGENITA_RUNTIME_DIR: runtime, JURGENITA_SECRETS_DIR: secrets, JURGENITA_SECRETS_BACKUP_DIR: sauvegardes, META_ACCESS_TOKEN: "", TIKTOK_ACCESS_TOKEN: "", LINKEDIN_ACCESS_TOKEN: "" },
   });
   assert.equal(run.status, 0, run.stderr.slice(0, 500));
   return { log: run.stdout + run.stderr, count: contents.length };

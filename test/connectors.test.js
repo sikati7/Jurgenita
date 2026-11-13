@@ -9,9 +9,12 @@ import path from "node:path";
 
 const secretsDir = fs.mkdtempSync(path.join(os.tmpdir(), "jurgenita-secrets-"));
 const runtimeDir = fs.mkdtempSync(path.join(os.tmpdir(), "jurgenita-runtime-"));
+// Sauvegardes de droits (2b.4) : dossier propre à ce fichier de test, supprimé à la fin, même en cas d'échec.
+const sauvegardesDir = fs.mkdtempSync(path.join(os.tmpdir(), "jurgenita-connecteurs-sauvegardes-"));
 // Les variables META_* et co. s'appliquent à la première marque (resto-afrik).
 Object.assign(process.env, {
   JURGENITA_SECRETS_DIR: secretsDir,
+  JURGENITA_SECRETS_BACKUP_DIR: sauvegardesDir,
   JURGENITA_RUNTIME_DIR: runtimeDir,
   GOOGLE_CLIENT_ID: "id", GOOGLE_CLIENT_SECRET: "secret",
   META_ACCESS_TOKEN: "tok", META_IG_USER_ID: "ig1", META_PAGE_ID: "pg1", META_AD_ACCOUNT_ID: "act_77",
@@ -74,6 +77,7 @@ after(() => {
   globalThis.fetch = realFetch;
   fs.rmSync(secretsDir, { recursive: true, force: true });
   fs.rmSync(runtimeDir, { recursive: true, force: true });
+  fs.rmSync(sauvegardesDir, { recursive: true, force: true });
 });
 
 const google = await import("../src/connectors/google.js");
