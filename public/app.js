@@ -854,7 +854,14 @@ function renderBrandsAdmin() {
           b.id !== state.brand ? el("button", { class: "btn small", onclick: () => setBrand(b.id) }, "Activer") : null,
           state.brands.length > 1 ? el("button", { class: "btn small danger", style: "margin:0", onclick: async () => {
             if (!confirm(`Retirer la marque « ${b.nom} » de Jurgenita ? Ses accès enregistrés seront effacés.`)) return;
-            await api("/api/brands/delete", { id: b.id });
+            try {
+              await api("/api/brands/delete", { id: b.id });
+            } catch (err) {
+              // Suppression refusée (fichier verrouillé, lecture seule…) : la marque
+              // reste affichée telle quelle et l'on peut réessayer.
+              toast(err.message);
+              return;
+            }
             if (b.id === state.brand) state.brand = null;
             await loadStatus();
             renderProfile();
