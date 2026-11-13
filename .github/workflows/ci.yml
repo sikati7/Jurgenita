@@ -35,17 +35,21 @@ jobs:
       # Garde-fou : sous Windows, les tests propres à Windows (dont les vrais
       # verrous NTFS de la sous-étape 2b.3) doivent avoir TOUS réellement tourné :
       # nombre exact attendu, tous réussis, aucun ignoré.
+      # Sous PowerShell, comme un lancement réel de Jurgenita : Git Bash active
+      # les privilèges de sauvegarde et de restauration des administrateurs,
+      # qui contournent les règles de refus que ces tests posent.
       - name: Tests Windows réellement exécutés
         if: runner.os == 'Windows'
-        shell: bash
+        shell: pwsh
         env:
           TESTS_WINDOWS_ATTENDUS: 21
         run: |
-          node --test test/windows.test.js | tee windows-tests.txt
-          grep -q "^# tests ${TESTS_WINDOWS_ATTENDUS}$" windows-tests.txt
-          grep -q "^# pass ${TESTS_WINDOWS_ATTENDUS}$" windows-tests.txt
-          grep -q "^# fail 0$" windows-tests.txt
-          grep -q "^# skipped 0$" windows-tests.txt
+          node --test test/windows.test.js | Tee-Object -FilePath windows-tests.txt
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $lignes = Get-Content windows-tests.txt
+          foreach ($attendu in "# tests $env:TESTS_WINDOWS_ATTENDUS", "# pass $env:TESTS_WINDOWS_ATTENDUS", "# fail 0", "# skipped 0") {
+            if ($lignes -notcontains $attendu) { Write-Output "Ligne attendue absente : $attendu"; exit 1 }
+          }
       # Garde-fou 2b.4 : sous Linux et macOS (comptes non root en CI), le vrai
       # refus d'accès doit avoir réellement tourné ; sous macOS, l'ACL réelle aussi.
       - name: Tests 2b.4 réellement exécutés (Linux, macOS)
