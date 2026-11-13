@@ -235,8 +235,8 @@ test("file d'attente : une erreur ne bloque pas la suite ; les fichiers différe
 
 // ---------- Serveur complet (verrous simulés par un module préchargé) ----------
 
-// Tant que le fichier « marqueur » existe, les remplacements (ou les lectures)
-// du fichier visé échouent comme sous Windows quand un antivirus le tient.
+// Tant que le fichier « marqueur » existe, les remplacements, lectures ou
+// effacements du fichier visé échouent comme sous Windows quand un antivirus le tient.
 const PRELOAD = `
 import fs from "node:fs";
 const target = process.env.TEST_LOCK_TARGET;
@@ -251,6 +251,16 @@ fs.readFileSync = function (p, ...rest) {
   if (typeof p === "string" && p.endsWith(target) && busy(process.env.TEST_LOCK_READ)) throw Object.assign(new Error("EBUSY: resource busy or locked, open"), { code: "EBUSY" });
   return realRead.call(this, p, ...rest);
 };
+const deleting = (p) => String(p).endsWith(target) && busy(process.env.TEST_LOCK_DELETE);
+const lockedDelete = () => Object.assign(new Error("EBUSY: resource busy or locked, unlink"), { code: "EBUSY" });
+for (const name of ["unlink", "rm"]) {
+  const real = fs.promises[name];
+  fs.promises[name] = async (p, ...rest) => { if (deleting(p)) throw lockedDelete(); return real(p, ...rest); };
+}
+for (const name of ["unlinkSync", "rmSync"]) {
+  const real = fs[name];
+  fs[name] = function (p, ...rest) { if (deleting(p)) throw lockedDelete(); return real.call(this, p, ...rest); };
+}
 `;
 
 async function startServer() {
@@ -261,12 +271,13 @@ async function startServer() {
   fs.writeFileSync(preload, PRELOAD);
   const lockWrite = path.join(ctl, "verrou-ecriture");
   const lockRead = path.join(ctl, "verrou-lecture");
+  const lockDelete = path.join(ctl, "verrou-effacement");
   const child = spawn(process.execPath, ["--import", pathToFileURL(preload).href, "server.js"], {
     cwd: root,
     env: {
       ...process.env, PORT: "0", JURGENITA_DEMO: "1", JURGENITA_NO_SCHEDULER: "1",
       JURGENITA_RUNTIME_DIR: runtime, JURGENITA_SECRETS_DIR: secrets,
-      TEST_LOCK_TARGET: `${path.sep}kora.json`, TEST_LOCK_WRITE: lockWrite, TEST_LOCK_READ: lockRead,
+      TEST_LOCK_TARGET: `${path.sep}kora.json`, TEST_LOCK_WRITE: lockWrite, TEST_LOCK_READ: lockRead, TEST_LOCK_DELETE: lockDelete,
       META_ACCESS_TOKEN: "", TIKTOK_ACCESS_TOKEN: "", LINKEDIN_ACCESS_TOKEN: "", TELEGRAM_BOT_TOKEN: "", GOOGLE_CLIENT_ID: "", GOOGLE_CLIENT_SECRET: "",
     },
   });
@@ -282,13 +293,14 @@ async function startServer() {
     port, secretFile, logs: () => logs, stop: () => child.kill(),
     lockWrite: () => fs.writeFileSync(lockWrite, ""), unlockWrite: () => fs.rmSync(lockWrite, { force: true }),
     lockRead: () => fs.writeFileSync(lockRead, ""), unlockRead: () => fs.rmSync(lockRead, { force: true }),
+    lockDelete: () => fs.writeFileSync(lockDelete, ""), unlockDelete: () => fs.rmSync(lockDelete, { force: true }),
   };
 }
 
 function call(port, method, p, body, brand = "kora") {
   return new Promise((resolve, reject) => {
     const t0 = Date.now();
-    const req = http.request({ host: "127.0.0.1", port, method, path: p, headers: { "content-type": "application/json", "x-marque": brand } }, (res) => {
+    const req = http.request({ host: "127.0.0.1", port, method, path: p, headers: { "content-type": "application/json", ...(brand ? { "x-marque": brand } : {}) } }, (res) => {
       let d = ""; res.on("data", (c) => (d += c)); res.on("end", () => { let json = null; try { json = JSON.parse(d); } catch { /* */ } resolve({ status: res.statusCode, headers: res.headers, body: json, text: d, ms: Date.now() - t0 }); });
     });
     req.on("error", reject);
@@ -408,6 +420,156 @@ test("serveur : deux marques enregistrées en même temps, sans interférence", 
       assert.deepEqual(saved, { meta_ig_user_id: `${brand}-meta_ig_user_id`, meta_page_id: `${brand}-meta_page_id`, linkedin_org_id: `${brand}-linkedin_org_id` });
     }
   } finally { srv.stop(); }
+});
+
+// ---------- Suppression d'une marque et file d'attente (correctif 2b.3) ----------
+// Une suppression ne doit jamais laisser de fichier d'accès orphelin, ni
+// laisser une opération en attente le recréer, ni le faire hériter à une
+// marque recréée sous le même identifiant.
+
+// Sans en-tête de marque (marque par défaut) : la marque visée peut ne plus exister.
+const del = (srv, id = "kora") => call(srv.port, "POST", "/api/brands/delete", { id }, null);
+const brandIds = async (srv) => (await call(srv.port, "GET", "/api/data/brands", null, null)).body.map((b) => b.id);
+const fieldsOf = async (srv, brand) => (await call(srv.port, "GET", "/api/status", null, brand)).body.connexions.marque.champs_renseignes;
+
+test("suppression pendant un saveConfig en attente : l'enregistrement passe d'abord, puis la marque et ses accès disparaissent", async () => {
+  const srv = await startServer();
+  try {
+    assert.equal((await put(srv, { tiktok_token: "tkQz81Lm4Xw7Pc2VbN6dR3" })).status, 200);
+    srv.lockWrite();
+    const pending = put(srv, { linkedin_token: "liWp52Hs9Ke3Gd7Tq4Mz8" });
+    await sleep(300);
+    const deletion = del(srv);
+    await sleep(300);
+    srv.unlockWrite();
+    const [save, removed] = await Promise.all([pending, deletion]);
+    assert.equal(save.status, 200, save.text);
+    assert.equal(removed.status, 200, removed.text);
+    assert.ok(!(await brandIds(srv)).includes("kora"), "marque supprimée");
+    assert.equal(fs.existsSync(srv.secretFile), false, "aucun fichier d'accès orphelin recréé");
+    assert.deepEqual(af.leftoverTemps(path.dirname(srv.secretFile)), []);
+  } finally { srv.unlockWrite(); srv.stop(); }
+});
+
+test("suppression pendant un validationToken en attente : aucun fichier d'accès orphelin", async () => {
+  const srv = await startServer();
+  try {
+    assert.equal((await put(srv, { meta_page_id: "page-1" })).status, 200);
+    srv.lockWrite();
+    const link = call(srv.port, "POST", "/api/brand/validation-link", {});
+    await sleep(300);
+    const deletion = del(srv);
+    await sleep(300);
+    srv.unlockWrite();
+    const [linkRes, removed] = await Promise.all([link, deletion]);
+    assert.equal(linkRes.status, 200, linkRes.text);
+    assert.equal(removed.status, 200, removed.text);
+    assert.ok(!(await brandIds(srv)).includes("kora"));
+    assert.equal(fs.existsSync(srv.secretFile), false, "aucun fichier d'accès orphelin recréé");
+  } finally { srv.unlockWrite(); srv.stop(); }
+});
+
+test("écriture lancée après la suppression : 404, aucun fichier recréé", async () => {
+  const srv = await startServer();
+  try {
+    assert.equal((await put(srv, { meta_page_id: "page-1" })).status, 200);
+    // a) Lancées pendant que la suppression attend (effacement verrouillé).
+    srv.lockDelete();
+    const deletion = del(srv);
+    await sleep(300);
+    const lateSave = put(srv, { meta_page_id: "tardif" });
+    const lateLink = call(srv.port, "POST", "/api/brand/validation-link", {});
+    await sleep(300);
+    srv.unlockDelete();
+    const [removed, save, link] = await Promise.all([deletion, lateSave, lateLink]);
+    assert.equal(removed.status, 200, removed.text);
+    assert.equal(save.status, 404, save.text);
+    assert.equal(link.status, 404, link.text);
+    assert.equal(fs.existsSync(srv.secretFile), false);
+    // b) Lancées une fois la suppression terminée.
+    assert.equal((await put(srv, { meta_page_id: "apres" })).status, 404);
+    assert.equal((await call(srv.port, "POST", "/api/brand/validation-link", {})).status, 404);
+    assert.equal(fs.existsSync(srv.secretFile), false, "aucun fichier recréé");
+    assert.deepEqual(af.leftoverTemps(path.dirname(srv.secretFile)), []);
+  } finally { srv.unlockDelete(); srv.stop(); }
+});
+
+test("suppression bloquée par un verrou persistant : 503 + Retry-After, marque et accès conservés ; réessai après libération", async () => {
+  const srv = await startServer();
+  try {
+    assert.equal((await put(srv, { tiktok_token: "tkQz81Lm4Xw7Pc2VbN6dR3", meta_page_id: "page-1" })).status, 200);
+    const before = fs.readFileSync(srv.secretFile, "utf8");
+    srv.lockDelete();
+    const res = await del(srv);
+    srv.unlockDelete();
+    assert.equal(res.status, 503, res.text);
+    assert.ok(Number(res.headers["retry-after"]) > 0, "en-tête Retry-After");
+    assert.match(res.body.erreur, /verrouill/i);
+    assert.match(res.body.erreur, /conservée/);
+    assert.ok(!res.text.includes("tkQz81"), "aucun jeton dans la réponse");
+    assert.ok((await brandIds(srv)).includes("kora"), "la marque reste dans la liste");
+    assert.equal(fs.readFileSync(srv.secretFile, "utf8"), before, "ses accès sont intacts");
+    assert.deepEqual((await fieldsOf(srv, "kora")).sort(), ["meta_page_id", "tiktok_token"]);
+    const again = await del(srv);
+    assert.equal(again.status, 200, again.text);
+    assert.equal(fs.existsSync(srv.secretFile), false);
+    assert.ok(!(await brandIds(srv)).includes("kora"));
+  } finally { srv.unlockDelete(); srv.stop(); }
+});
+
+test("suppression d'une marque dont le fichier d'accès est en lecture seule : 409, rien n'est supprimé", async () => {
+  const srv = await startServer();
+  try {
+    assert.equal((await put(srv, { meta_page_id: "page-1" })).status, 200);
+    fs.chmodSync(srv.secretFile, 0o444);
+    const before = fs.readFileSync(srv.secretFile, "utf8");
+    const mode = fs.statSync(srv.secretFile).mode;
+    const res = await del(srv);
+    assert.equal(res.status, 409, res.text);
+    assert.match(res.body.erreur, /lecture seule/);
+    assert.ok((await brandIds(srv)).includes("kora"));
+    assert.equal(fs.readFileSync(srv.secretFile, "utf8"), before);
+    assert.equal(fs.statSync(srv.secretFile).mode, mode, "droits non modifiés");
+  } finally { try { fs.chmodSync(srv.secretFile, 0o600); } catch { /* */ } srv.stop(); }
+});
+
+test("marque recréée avec le même identifiant : aucun ancien accès ; un fichier orphelin existant n'est ni réattribué ni supprimé", async () => {
+  const srv = await startServer();
+  try {
+    assert.equal((await put(srv, { tiktok_token: "tkQz81Lm4Xw7Pc2VbN6dR3", linkedin_org_id: "org-1" })).status, 200);
+    assert.equal((await del(srv)).status, 200);
+    const recreated = await call(srv.port, "POST", "/api/brands", { nom: "Kora" }, null);
+    assert.equal(recreated.status, 200, recreated.text);
+    assert.equal(recreated.body.id, "kora", "même identifiant");
+    assert.deepEqual(await fieldsOf(srv, "kora"), [], "aucun ancien accès récupéré");
+    assert.equal(fs.existsSync(srv.secretFile), false);
+
+    // Fichier orphelin déjà présent (laissé par une version antérieure) :
+    // la nouvelle marque prend un autre identifiant, l'orphelin reste intact.
+    const orphan = path.join(path.dirname(srv.secretFile), "nouvelle.json");
+    const orphanContent = JSON.stringify({ tiktok_token: "tkOrphelinH7j2K9m4N1p" });
+    fs.writeFileSync(orphan, orphanContent);
+    const created = await call(srv.port, "POST", "/api/brands", { nom: "Nouvelle" }, null);
+    assert.equal(created.status, 200, created.text);
+    assert.notEqual(created.body.id, "nouvelle", "l'identifiant de l'orphelin n'est pas réutilisé");
+    assert.deepEqual(await fieldsOf(srv, created.body.id), []);
+    assert.equal(fs.readFileSync(orphan, "utf8"), orphanContent, "l'orphelin n'est ni modifié ni supprimé");
+  } finally { srv.stop(); }
+});
+
+test("deux suppressions simultanées des deux dernières marques : une seule aboutit, il reste une marque", async () => {
+  const srv = await startServer();
+  try {
+    srv.lockDelete(); // ralentit la suppression de kora pour que les deux se chevauchent
+    const first = del(srv, "kora");
+    await sleep(300);
+    const second = del(srv, "resto-afrik");
+    await sleep(300);
+    srv.unlockDelete();
+    const statuses = (await Promise.all([first, second])).map((r) => r.status).sort();
+    assert.deepEqual(statuses, [200, 400]);
+    assert.equal((await brandIds(srv)).length, 1, "il reste toujours une marque");
+  } finally { srv.unlockDelete(); srv.stop(); }
 });
 
 // ---------- Masquage des journaux pendant un verrou (TikTok, LinkedIn) ----------

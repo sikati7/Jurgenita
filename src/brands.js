@@ -7,7 +7,7 @@ import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import * as store from "./store.js";
 import {
-  readJsonFile, readJsonFileRetrying, writeJsonAtomicAsync, withFileLock, leftoverTemps, describeUnreadable,
+  readJsonFile, readJsonFileRetrying, writeJsonAtomicAsync, removeFileAsync, withFileLock, leftoverTemps, describeUnreadable,
   FileBusyError, ReadOnlyFileError,
 } from "./atomic-file.js";
 
@@ -28,7 +28,10 @@ export function create({ nom, couleur }) {
   const base = nom.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 30) || "marque";
   const brands = list();
   let id = base;
-  for (let i = 2; brands.some((b) => b.id === id); i++) id = `${base}-${i}`;
+  // Un identifiant dont le fichier d'accès existe encore (orphelin laissé par
+  // une ancienne version) n'est jamais réutilisé : la nouvelle marque
+  // n'hérite pas d'anciens accès, et l'orphelin n'est ni modifié ni supprimé.
+  for (let i = 2; brands.some((b) => b.id === id) || fs.existsSync(secretFile(id)); i++) id = `${base}-${i}`;
   const brand = { id, nom: nom.trim(), couleur: couleur || "#4fd8ff" };
   store.write("brands", [...brands, brand]);
   const template = store.read("profile", defaultId());
@@ -50,16 +53,40 @@ export function create({ nom, couleur }) {
   return brand;
 }
 
-export function remove(id) {
-  const brands = list();
-  if (brands.length <= 1) throw Object.assign(new Error("Gardez au moins une marque"), { status: 400 });
-  get(id);
-  store.write("brands", brands.filter((b) => b.id !== id));
-  fs.rmSync(secretFile(id), { force: true });
-  redactionCache.delete(id);
+// Suppression d'une marque. Elle passe par la file d'attente du fichier
+// d'accès : les enregistrements déjà en attente se terminent d'abord, ceux qui
+// arrivent après échouent en 404 sans rien recréer. Les accès sont effacés
+// AVANT de retirer la marque de la liste : si l'effacement échoue (verrou,
+// lecture seule), la marque reste en place avec ses accès, sans orphelin.
+// Une seule suppression à la fois, pour garder toujours au moins une marque.
+export async function remove(id) {
+  await withFileLock(REMOVALS_QUEUE, () => updateSecrets(id, async () => {
+    if (list().length <= 1) throw Object.assign(new Error("Gardez au moins une marque"), { status: 400 });
+    get(id);
+    try {
+      await removeFileAsync(secretFile(id));
+    } catch (err) {
+      if (err instanceof FileBusyError) {
+        console.warn(`[accès] Suppression de la marque ${id} reportée : fichier de ses accès verrouillé. Rien n'a été supprimé.`);
+        throw new FileBusyError(secretFile(id), `La marque « ${id} » n'a pas été supprimée : le fichier de ses accès est momentanément verrouillé (antivirus, synchronisation OneDrive, sauvegarde…). La marque est conservée, ainsi que ses accès : réessayez dans quelques secondes.`);
+      }
+      if (err instanceof ReadOnlyFileError) {
+        throw new ReadOnlyFileError(secretFile(id), `La marque « ${id} » n'a pas été supprimée : le fichier de ses accès est en lecture seule. Retirez sa protection en écriture, puis réessayez.`);
+      }
+      throw err;
+    }
+    // Liste relue maintenant : une marque créée pendant l'attente n'est pas perdue.
+    store.write("brands", list().filter((b) => b.id !== id));
+    // Suppression finalisée : plus rien à masquer ni à signaler pour cette marque.
+    redactionCache.delete(id);
+    reported.delete(id);
+    reported.delete(`verrou:${id}`);
+  }));
 }
 
 const secretFile = (id) => path.join(SECRETS_DIR, `${store.checkBrandId(id)}.json`);
+// Clé de file d'attente (aucun fichier n'est créé à cet emplacement).
+const REMOVALS_QUEUE = path.join(SECRETS_DIR, ".suppressions-de-marques");
 
 // Accès enregistrés d'une marque qui existent mais ne peuvent pas être lus
 // (fichier abîmé, tronqué, inaccessible). Ils ne sont jamais écrasés.
@@ -212,6 +239,7 @@ export const CONFIG_FIELDS = [
 export async function saveConfig(id, values) {
   get(id);
   await updateSecrets(id, async () => {
+    get(id); // revérifiée dans la file : la marque a pu être supprimée entre-temps (404, rien n'est écrit)
     const current = await readSecretsForUpdate(id);
     for (const field of CONFIG_FIELDS) {
       if (typeof values[field] === "string" && values[field].trim()) current[field] = values[field].trim();
@@ -242,6 +270,7 @@ export function connectionStatus(id) {
 export async function validationToken(id) {
   get(id);
   return updateSecrets(id, async () => {
+    get(id); // revérifiée dans la file : la marque a pu être supprimée entre-temps (404, rien n'est écrit)
     const s = await readSecretsForUpdate(id);
     if (!s.validation_token) {
       s.validation_token = randomBytes(18).toString("base64url");

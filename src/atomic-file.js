@@ -293,6 +293,24 @@ async function syncDirectoryAsync(dir, fsImpl) {
   }
 }
 
+// Effacement d'un fichier, avec les mêmes règles que l'écriture : un verrou
+// passager est réessayé (FileBusyError au-delà du délai), un fichier en lecture
+// seule est refusé tout de suite (ReadOnlyFileError) et n'est pas touché. Un
+// fichier déjà absent n'est pas une erreur.
+export async function removeFileAsync(file, { fsImpl = fs, budgetMs = DEFAULT_BUDGET_MS, sleep = defaultSleep } = {}) {
+  if (await isReadOnly(file, fsImpl)) throw new ReadOnlyFileError(file);
+  try {
+    await retrying(() => fsImpl.promises.unlink(file), {
+      deadline: Date.now() + budgetMs, sleep, file,
+      onLock: async () => { if (await isReadOnly(file, fsImpl)) throw new ReadOnlyFileError(file); },
+    });
+  } catch (err) {
+    if (err?.code === "ENOENT") return;
+    throw err;
+  }
+  await syncDirectoryAsync(path.dirname(file), fsImpl);
+}
+
 // Lecture qui patiente pendant un verrou passager. Un fichier réellement
 // abîmé est renvoyé tout de suite comme « illisible » ; un verrou qui ne
 // cède pas dans le délai donne FileBusyError.

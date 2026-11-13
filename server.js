@@ -187,7 +187,10 @@ const routes = {
 
   // Marques
   "POST /api/brands": (body) => brands.create(body),
-  "POST /api/brands/delete": (body) => (brands.remove(body.id), { ok: true }),
+  "POST /api/brands/delete": async (body) => {
+    await brands.remove(body.id);
+    return { ok: true };
+  },
   "PUT /api/brand/connexions": async (body, brand) => {
     await brands.saveConfig(brand, body);
     return brands.connectionStatus(brand);
