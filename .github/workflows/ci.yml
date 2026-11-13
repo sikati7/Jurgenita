@@ -28,12 +28,17 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm test
-      # Garde-fou : sous Windows, les tests propres à Windows doivent avoir
-      # réellement tourné (aucun ignoré, au moins un réussi).
+      # Garde-fou : sous Windows, les tests propres à Windows (dont les vrais
+      # verrous NTFS de la sous-étape 2b.3) doivent avoir TOUS réellement tourné :
+      # nombre exact attendu, tous réussis, aucun ignoré.
       - name: Tests Windows réellement exécutés
         if: runner.os == 'Windows'
         shell: bash
+        env:
+          TESTS_WINDOWS_ATTENDUS: 9
         run: |
           node --test test/windows.test.js | tee windows-tests.txt
+          grep -q "^# tests ${TESTS_WINDOWS_ATTENDUS}$" windows-tests.txt
+          grep -q "^# pass ${TESTS_WINDOWS_ATTENDUS}$" windows-tests.txt
+          grep -q "^# fail 0$" windows-tests.txt
           grep -q "^# skipped 0$" windows-tests.txt
-          grep -q "^# pass [1-9]" windows-tests.txt

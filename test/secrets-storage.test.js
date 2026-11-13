@@ -124,7 +124,7 @@ test("marques : un fichier illisible n'est jamais écrasé, les autres marques f
     const out = {};
     // 1. Absent : aucun accès, écriture permise.
     out.absent = brands.connectionStatus("kora");
-    brands.saveConfig("kora", { meta_token: "jeton-factice-kora", meta_page_id: "42" });
+    await brands.saveConfig("kora", { meta_token: "jeton-factice-kora", meta_page_id: "42" });
     out.apresEcriture = brands.connectionStatus("kora");
     // 2. Fichier abîmé (coupure pendant une ancienne écriture non atomique).
     fs.writeFileSync(file, '{ "meta_token": "jeton-factice-kora", "meta_page');
@@ -136,14 +136,14 @@ test("marques : un fichier illisible n'est jamais écrasé, les autres marques f
       ["saveConfig vide", () => brands.saveConfig("kora", {})],
       ["validationToken", () => brands.validationToken("kora")],
     ]) {
-      try { action(); out[nom] = "accepté"; } catch (e) { out[nom] = [e.status, e.name]; }
+      try { await action(); out[nom] = "accepté"; } catch (e) { out[nom] = [e.status, e.name]; }
     }
     out.inchange = fs.readFileSync(file, "utf8") === avant;
     out.parJeton = brands.brandByValidationToken("x".repeat(24));
     // 3. L'autre marque n'est pas touchée.
-    brands.saveConfig("resto-afrik", { linkedin_token: "jeton-factice-resto", linkedin_org_id: "7" });
+    await brands.saveConfig("resto-afrik", { linkedin_token: "jeton-factice-resto", linkedin_org_id: "7" });
     out.autre = brands.connectionStatus("resto-afrik");
-    const lien = brands.validationToken("resto-afrik");
+    const lien = await brands.validationToken("resto-afrik");
     out.lienAutre = brands.brandByValidationToken(lien)?.id;
     out.sante = brands.secretsHealth();
     process.stdout.write(JSON.stringify(out));

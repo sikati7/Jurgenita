@@ -45,10 +45,9 @@ const meta = await import("./src/connectors/meta.js");
 const telegram = await import("./src/connectors/telegram.js");
 const LIVE = !process.env.JURGENITA_DEMO && Boolean(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN);
 const brain = LIVE ? await import("./src/claude.js") : await import("./src/demo.js");
-redaction.addSecretSource(() => brands.list().flatMap((b) => {
-  const c = brands.config(b.id);
-  return [c.meta.token, c.tiktok.token, c.linkedin.token];
-}));
+// Jetons des marques : dernières valeurs valides connues, pour qu'ils restent
+// masqués même pendant un verrou passager sur leur fichier (masquage seulement).
+redaction.addSecretSource(() => brands.secretsForRedaction());
 
 const PORT = Number(process.env.PORT || 3000);
 // Pas d'authentification : on n'écoute que sur la machine locale par défaut.
@@ -67,8 +66,8 @@ const BRAND_DATA = {
 };
 const MIME = { ".html": "text/html; charset=utf-8", ".css": "text/css", ".js": "text/javascript", ".svg": "image/svg+xml", ".json": "application/json" };
 
-function send(res, status, body) {
-  res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
+function send(res, status, body, headers = {}) {
+  res.writeHead(status, { "content-type": "application/json; charset=utf-8", ...headers });
   res.end(JSON.stringify(body));
 }
 
@@ -119,6 +118,8 @@ async function readBody(req, limit = BODY_LIMIT) {
 // les erreurs inattendues donnent un message générique et une référence,
 // le détail n'allant que dans le journal.
 function publicError(err) {
+  // Fichier momentanément verrouillé : message prévu pour l'utilisateur, à réessayer.
+  if (err.status === 503 && err.retryAfter) return { status: 503, erreur: redaction.redact(err.message), retryAfter: err.retryAfter };
   if (err.status && err.status < 500) return { status: err.status, erreur: redaction.redact(err.message) };
   if (err instanceof Anthropic.APIError) {
     const why = { 401: "clé API refusée", 403: "accès refusé", 429: "trop de demandes, réessayez dans un instant" }[err.status] || "service momentanément indisponible";
@@ -187,8 +188,11 @@ const routes = {
   // Marques
   "POST /api/brands": (body) => brands.create(body),
   "POST /api/brands/delete": (body) => (brands.remove(body.id), { ok: true }),
-  "PUT /api/brand/connexions": (body, brand) => (brands.saveConfig(brand, body), brands.connectionStatus(brand)),
-  "POST /api/brand/validation-link": (body, brand) => ({ chemin: `/validation/${brands.validationToken(brand)}` }),
+  "PUT /api/brand/connexions": async (body, brand) => {
+    await brands.saveConfig(brand, body);
+    return brands.connectionStatus(brand);
+  },
+  "POST /api/brand/validation-link": async (body, brand) => ({ chemin: `/validation/${await brands.validationToken(brand)}` }),
   "PUT /api/profile": (body, brand) => store.write("profile", { ...store.read("profile", brand), ...body }, brand),
 
   // Assistant
@@ -361,7 +365,7 @@ const server = http.createServer(async (req, res) => {
   } catch (err) {
     const pub = publicError(err);
     if (pub.log) console.error(`[${req.method} ${url.pathname}]${pub.ref ? ` réf. ${pub.ref}` : ""} ${safeForLog(err)}`);
-    if (!res.headersSent) send(res, pub.status, { erreur: pub.erreur });
+    if (!res.headersSent) send(res, pub.status, { erreur: pub.erreur }, pub.retryAfter ? { "retry-after": String(pub.retryAfter) } : {});
   }
 });
 

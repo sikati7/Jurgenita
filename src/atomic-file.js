@@ -21,6 +21,10 @@ import { randomBytes } from "node:crypto";
 
 export const TEMP_SUFFIX = ".tmp-jurgenita";
 
+// Codes qu'un verrou passager produit sous Windows (antivirus, OneDrive,
+// sauvegarde, éditeur qui garde le fichier ouvert).
+const LOCK_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
+
 // Fichier illisible. L'erreur ne garde QUE des informations sans contenu
 // (catégorie, code système, position, taille) : le message brut d'une erreur
 // de lecture JSON recopie un extrait du fichier, donc parfois d'un secret.
@@ -57,6 +61,7 @@ export function describeUnreadable(erreur) {
     case "fichier_vide": return `fichier vide${size}`;
     case "json_invalide": return `JSON invalide${d.position !== undefined ? `, position ${d.position}` : ""}${d.ligne ? ` (ligne ${d.ligne}, colonne ${d.colonne})` : ""}${size}`;
     case "pas_un_objet": return `le contenu n'est pas un objet JSON (${d.type})${size}`;
+    case "verrouille": return `fichier verrouillé ou accès refusé (${d.code})`;
     case "lecture_impossible": return `lecture impossible (${d.code || "erreur inconnue"})`;
     default: return "raison inconnue";
   }
@@ -69,6 +74,8 @@ export function readJsonFile(file, { fsImpl = fs } = {}) {
     text = fsImpl.readFileSync(file, "utf8");
   } catch (err) {
     if (err.code === "ENOENT") return { etat: "absent" };
+    // Verrouillé : le contenu n'est pas en cause, il faut seulement réessayer.
+    if (LOCK_CODES.has(err.code)) return { etat: "illisible", erreur: new UnreadableFileError(file, { categorie: "verrouille", code: String(err.code) }) };
     return { etat: "illisible", erreur: new UnreadableFileError(file, { categorie: "lecture_impossible", code: String(err.code || "") }) };
   }
   let valeur;
@@ -148,4 +155,167 @@ export function leftoverTemps(dir, { fsImpl = fs } = {}) {
   } catch {
     return [];
   }
+}
+
+// ---------------------------------------------------------------------------
+// Écriture asynchrone (sous-étape 2b.3)
+//
+// Mêmes garanties que writeJsonAtomic (temporaire, fsync, relecture,
+// remplacement en une opération, vidage du dossier), mais :
+// - aucune attente ne bloque le serveur : les autres requêtes sont servies ;
+// - un verrou passager est réessayé à chaque étape sensible, avec des attentes
+//   progressives (25 ms, doublées jusqu'à 1 s, part aléatoire) pendant au plus
+//   `budgetMs` (5 s par défaut), puis FileBusyError (503, « réessayez ») ;
+// - un fichier en lecture seule est refusé tout de suite (ReadOnlyFileError,
+//   409) : il n'est ni remplacé ni rendu modifiable, sous Linux comme Windows ;
+// - les fichiers temporaires d'écritures antérieures ne sont jamais supprimés :
+//   une écriture qui échoue ne retire que son propre temporaire.
+// La lecture-modification-écriture d'un même fichier doit se faire dans
+// withFileLock, qui les exécute l'une après l'autre (pas de mise à jour perdue).
+// ---------------------------------------------------------------------------
+
+export const DEFAULT_BUDGET_MS = 5000;
+
+// Verrou qui n'a pas cédé dans le temps imparti. Message sans chemin ni contenu.
+export class FileBusyError extends Error {
+  constructor(file, message = "Fichier momentanément verrouillé (antivirus, synchronisation OneDrive, sauvegarde…). Réessayez dans quelques secondes.") {
+    super(message);
+    this.name = "FileBusyError";
+    this.status = 503;
+    this.retryAfter = 5;
+    this.file = file;
+  }
+}
+
+// Fichier protégé en écriture par son propriétaire : on ne le modifie pas.
+export class ReadOnlyFileError extends Error {
+  constructor(file, message = "Fichier en lecture seule : Jurgenita ne le modifiera pas. Retirez la protection en écriture, puis réessayez.") {
+    super(message);
+    this.name = "ReadOnlyFileError";
+    this.status = 409;
+    this.file = file;
+  }
+}
+
+const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Exécute `op`, en réessayant tant qu'elle échoue sur un verrou et que le
+// délai n'est pas écoulé. `onLock` peut transformer l'erreur (lecture seule).
+async function retrying(op, { deadline, sleep, file, onLock }) {
+  for (let delay = 25; ; delay = Math.min(delay * 2, 1000)) {
+    try {
+      return await op();
+    } catch (err) {
+      if (!LOCK_CODES.has(err?.code)) throw err;
+      if (onLock) await onLock(err);
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new FileBusyError(file);
+      await sleep(Math.min(remaining, delay * (0.5 + Math.random() / 2)));
+    }
+  }
+}
+
+// Lecture seule : aucun droit d'écriture (ni propriétaire, ni groupe, ni autres).
+// Sous Windows, Node présente l'attribut « lecture seule » de la même façon.
+async function isReadOnly(file, fsImpl) {
+  try {
+    return ((await fsImpl.promises.stat(file)).mode & 0o222) === 0;
+  } catch {
+    return false; // absent ou inaccessible : ce n'est pas une lecture seule
+  }
+}
+
+export async function writeJsonAtomicAsync(file, value, { mode = 0o600, fsImpl = fs, budgetMs = DEFAULT_BUDGET_MS, sleep = defaultSleep } = {}) {
+  const fsp = fsImpl.promises;
+  const dir = path.dirname(file);
+  const text = JSON.stringify(value, null, 2);
+  const expected = JSON.stringify(JSON.parse(text));
+  const deadline = Date.now() + budgetMs;
+  const opts = { deadline, sleep, file };
+  // Refus immédiat, avant toute écriture, d'un fichier en lecture seule.
+  if (await isReadOnly(file, fsImpl)) throw new ReadOnlyFileError(file);
+  await fsp.mkdir(dir, { recursive: true });
+  const temp = path.join(dir, `.${path.basename(file)}.${randomBytes(6).toString("hex")}${TEMP_SUFFIX}`);
+  let created = false;
+  try {
+    const handle = await retrying(() => fsp.open(temp, "wx", mode), opts);
+    created = true;
+    try {
+      await handle.writeFile(text, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    const check = await retrying(() => {
+      const r = readJsonFile(temp, { fsImpl });
+      if (r.etat === "illisible" && r.erreur.diagnostic.categorie === "verrouille") throw Object.assign(new Error("relecture verrouillée"), { code: r.erreur.diagnostic.code });
+      return r;
+    }, opts);
+    if (check.etat !== "ok" || JSON.stringify(check.valeur) !== expected) {
+      throw new Error(`Vérification de l'écriture échouée : ${path.basename(file)} n'a pas été modifié`);
+    }
+    // Remplacement. Un refus peut venir d'un verrou (on réessaie) ou d'un
+    // fichier passé en lecture seule entre-temps (refus immédiat).
+    await retrying(() => fsp.rename(temp, file), {
+      ...opts,
+      onLock: async () => { if (await isReadOnly(file, fsImpl)) throw new ReadOnlyFileError(file); },
+    });
+    created = false;
+  } catch (err) {
+    if (created) await removeOwnTemp(temp, fsImpl, deadline, sleep);
+    // Un verrou qui s'échappe d'une étape non réessayée reste un verrou.
+    if (LOCK_CODES.has(err?.code)) throw new FileBusyError(file);
+    throw err;
+  }
+  await syncDirectoryAsync(dir, fsImpl);
+}
+
+// Retire le temporaire de CETTE écriture, en réessayant un peu sous verrou ;
+// s'il résiste, il est laissé (et signalé par leftoverTemps), jamais relu.
+async function removeOwnTemp(temp, fsImpl, deadline, sleep) {
+  try {
+    await retrying(() => fsImpl.promises.rm(temp, { force: true }), { deadline: Math.max(deadline, Date.now() + 1000), sleep, file: temp });
+  } catch {
+    // laissé sur place : signalé au démarrage, nettoyage réservé à la 2b.5
+  }
+}
+
+async function syncDirectoryAsync(dir, fsImpl) {
+  if (process.platform === "win32") return;
+  let handle;
+  try {
+    handle = await fsImpl.promises.open(dir, "r");
+    await handle.sync();
+  } catch {
+    // Certains systèmes de fichiers refusent : le renommage reste atomique.
+  } finally {
+    if (handle) await handle.close().catch(() => {});
+  }
+}
+
+// Lecture qui patiente pendant un verrou passager. Un fichier réellement
+// abîmé est renvoyé tout de suite comme « illisible » ; un verrou qui ne
+// cède pas dans le délai donne FileBusyError.
+export async function readJsonFileRetrying(file, { fsImpl = fs, budgetMs = DEFAULT_BUDGET_MS, sleep = defaultSleep } = {}) {
+  return retrying(() => {
+    const r = readJsonFile(file, { fsImpl });
+    if (r.etat === "illisible" && r.erreur.diagnostic.categorie === "verrouille") throw Object.assign(new Error("lecture verrouillée"), { code: r.erreur.diagnostic.code });
+    return r;
+  }, { deadline: Date.now() + budgetMs, sleep, file });
+}
+
+// File d'attente par fichier (dans ce processus) : les opérations sur un même
+// fichier s'exécutent l'une après l'autre, dans l'ordre d'arrivée ; celles sur
+// des fichiers différents ne s'attendent pas. Un échec ne bloque pas la suite.
+const queues = new Map();
+const queueKey = (file) => (process.platform === "win32" ? path.resolve(file).toLowerCase() : path.resolve(file));
+
+export function withFileLock(file, fn) {
+  const key = queueKey(file);
+  const previous = queues.get(key) || Promise.resolve();
+  const run = previous.then(() => fn());
+  const settled = run.then(() => {}, () => {});
+  queues.set(key, settled);
+  settled.then(() => { if (queues.get(key) === settled) queues.delete(key); });
+  return run;
 }

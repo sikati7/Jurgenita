@@ -67,7 +67,7 @@ function runWithBrokenBrands(contents) {
     const brands = await import(${JSON.stringify(srcUrl("brands.js"))});
     redaction.addSecretSource(() => brands.list().flatMap((b) => { const c = brands.config(b.id); return [c.meta.token, c.tiktok.token, c.linkedin.token]; }));
     for (const b of brands.list()) brands.connectionStatus(b.id);
-    try { brands.saveConfig(brands.list()[0].id, { meta_token: "x" }); } catch (e) { console.error("refus :", e); }
+    try { await brands.saveConfig(brands.list()[0].id, { meta_token: "x" }); } catch (e) { console.error("refus :", e); }
     console.error("santé :", brands.secretsHealth());`;
   const run = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
     encoding: "utf8",
