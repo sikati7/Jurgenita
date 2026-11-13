@@ -84,6 +84,19 @@ export function moiPosix() {
   return { uid: process.getuid(), gid: process.getgid(), nom: info.username };
 }
 
+// Outils système : chemin complet quand il existe. Un homonyme placé plus tôt
+// dans le PATH (par exemple le ls GNU sur macOS, qui ignore l'option -e) ne
+// doit pas fausser l'analyse ; le PATH ne sert qu'en dernier recours.
+const OUTILS = {
+  ls: ["/bin/ls", "/usr/bin/ls"],
+  getfacl: ["/usr/bin/getfacl", "/bin/getfacl"],
+  getent: ["/usr/bin/getent", "/bin/getent"],
+  dscl: ["/usr/bin/dscl"],
+  dscacheutil: ["/usr/bin/dscacheutil"],
+};
+export const outil = (nom, existe = fs.existsSync) => (OUTILS[nom] || []).find((p) => existe(p)) || nom;
+const executerOutil = (c, a) => execFileSync(outil(c), a, { encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "ignore"] });
+
 // Membres d'un groupe (Linux). Certitude seulement si les annuaires de comptes
 // sont purement locaux (fichiers), sans entrées NIS « + / - » ni
 // enregistrements systemd-userdb de groupes. Sinon : incertain.
@@ -132,7 +145,7 @@ export function lireCheminRecherche(sortie) {
   const valeurs = reste ? reste.split(/\s+/) : lignes.slice(i + 1).filter((l) => /^\s/.test(l)).map((l) => l.trim()).filter(Boolean);
   return valeurs.length ? valeurs : null;
 }
-export function groupesMac({ executer = (c, a) => execFileSync(c, a, { encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "ignore"] }) } = {}) {
+export function groupesMac({ executer = executerOutil } = {}) {
   return (gid, moi) => {
     try {
       const chemin = lireCheminRecherche(executer("dscl", ["/Search", "-read", "/", "CSPSearchPath"]));
@@ -156,7 +169,7 @@ export function groupesMac({ executer = (c, a) => execFileSync(c, a, { encoding:
 }
 
 // ACL étendues. Linux : présence (« + » dans ls -ld) puis getfacl.
-export function aclLinux({ executer = (c, a) => execFileSync(c, a, { encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "ignore"] }) } = {}) {
+export function aclLinux({ executer = executerOutil } = {}) {
   return (p) => {
     let ls;
     try { ls = executer("ls", ["-ld", "--", p]); } catch { return { lisible: false, raison: "ls indisponible" }; }
@@ -174,7 +187,7 @@ export function aclLinux({ executer = (c, a) => execFileSync(c, a, { encoding: "
 }
 
 // ACL macOS (indépendantes des bits de mode) : lues avec ls -led.
-export function aclMac({ executer = (c, a) => execFileSync(c, a, { encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "ignore"] }) } = {}) {
+export function aclMac({ executer = executerOutil } = {}) {
   return (p) => {
     let sortie;
     try { sortie = executer("ls", ["-led", "--", p]); } catch { return { lisible: false, raison: "ls indisponible" }; }
@@ -283,7 +296,7 @@ export function analyserChainePosix({ sensible, vue, moi, groupe, acl, plateform
     function evaluerGroupe(g) {
       let gid = g.gid;
       if (gid === undefined) {
-        try { gid = Number(execFileSync("getent", ["group", g.nom], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).split(":")[2]); } catch { gid = NaN; }
+        try { gid = Number(execFileSync(outil("getent"), ["group", g.nom], { encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "ignore"] }).split(":")[2]); } catch { gid = NaN; }
         if (!Number.isFinite(gid)) { problemes.push({ niveau: "incertain", code: "groupe_incertain", message: `${parent} : membres du ${g.libelle} inconnus.` }); return; }
       }
       const r = groupe(gid, moi);

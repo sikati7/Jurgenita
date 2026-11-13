@@ -290,6 +290,14 @@ test("annuaires macOS : recherche locale = certain ; Active Directory, LDAP, gro
   assert.equal(g("illisible").certain, false);
 });
 
+test("outils Linux et macOS : chemin complet quand il existe, PATH en dernier recours", () => {
+  assert.equal(sd.outil("ls", (p) => p === "/bin/ls"), "/bin/ls");
+  assert.equal(sd.outil("ls", (p) => p === "/usr/bin/ls"), "/usr/bin/ls");
+  assert.equal(sd.outil("dscl", (p) => p === "/usr/bin/dscl"), "/usr/bin/dscl");
+  assert.equal(sd.outil("ls", () => false), "ls");
+  if (process.platform === "darwin") assert.equal(sd.outil("ls"), "/bin/ls", "le ls de macOS, jamais un ls GNU du PATH");
+});
+
 test("lecture des ACL : getfacl (Linux) et ls -le (macOS)", () => {
   const linux = sd.aclLinux({ executer: (c) => (c === "ls" ? "drwxrwxr-x+ 2 moi moi 4096 nov. 13 08:00 /p\n" : "user::rwx\nuser:bob:rwx\t#effective:r-x\ngroup::r-x\nmask::r-x\nother::r-x\n") })("/p");
   assert.deepEqual(linux.entrees.find((e) => e.nom === "bob"), { type: "user", nom: "bob", droits: "r-x" }, "droits effectifs (masque) retenus");
