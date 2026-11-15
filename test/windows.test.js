@@ -726,3 +726,54 @@ test("Windows (ACL réelle) : .env lisible par d'autres comptes → information 
     assert.ok(!JSON.stringify(r).includes("sk-ant-factice"));
   } finally { cleanup(base); }
 });
+
+// Point 1 : substitution par un lien/jonction ou un autre objet entre
+// l'inventaire et l'application des ACL. L'application se fait sur une poignée
+// qui ne suit pas les liens, avec vérification de l'identité : l'objet remplacé
+// est refusé et aucune ACL n'est posée à travers lui.
+test("Windows (ACL réelle) : substitution entre l'inventaire et l'application → refusée, cible extérieure strictement intacte (point 1)", onlyWindows, async () => {
+  const base = newDir("acl-subst");
+  const externeDir = newDir("acl-externe");
+  try {
+    const externe = path.join(externeDir, "cible.json");
+    fs.writeFileSync(externe, "{}");
+    icacls(externe, "/grant", `*${BU}:(R)`);
+    const externeAvant = etatAcl(externe);
+    const jeton = await jetonReel();
+    // (a) Lien (point d'analyse) à la place du fichier : détecté, rien appliqué à travers.
+    const t1 = arbreOuvert(base);
+    const lu1 = await win.inspecter(win.executerPowerShell, { arbres: [t1.secrets] });
+    fs.rmSync(t1.kora);
+    const ml = spawnSync("cmd", ["/c", "mklink", t1.kora, externe], { encoding: "utf8", windowsHide: true });
+    assert.equal(ml.status, 0, `mklink : ${ml.stdout}${ml.stderr}`);
+    const r1 = await win.protegerArbre({ racine: t1.secrets, elements: lu1.arbres[0].elements, jeton, ps: win.executerPowerShell });
+    assert.equal(r1.ok, false, "protection échouée sur l'objet remplacé par un lien");
+    assert.deepEqual(etatAcl(externe), externeAvant, "cible extérieure (lien) strictement intacte");
+    try { fs.rmSync(t1.kora); } catch { /* lien de fichier */ }
+    // (b) Autre fichier (identité différente) à la place : refusé aussi.
+    const t2 = arbreOuvert(path.join(base, "b"));
+    const lu2 = await win.inspecter(win.executerPowerShell, { arbres: [t2.secrets] });
+    fs.rmSync(t2.kora);
+    fs.writeFileSync(t2.kora, "{}"); // nouvel objet : identité différente de l'inventaire
+    const r2 = await win.protegerArbre({ racine: t2.secrets, elements: lu2.arbres[0].elements, jeton, ps: win.executerPowerShell });
+    assert.equal(r2.ok, false, "objet d'identité différente refusé");
+    assert.deepEqual(etatAcl(externe), externeAvant, "cible extérieure toujours intacte");
+  } finally { cleanup(externeDir); cleanup(base); }
+});
+
+// Point 2 : un dossier des sauvegardes non protégé qui contient déjà des
+// éléments ne doit jamais être adopté : correction interrompue, rien modifié.
+test("Windows (ACL réelle) : dossier des sauvegardes non fiable (déjà rempli, non protégé) → correction interrompue, rien adopté (point 2)", onlyWindows, async () => {
+  const base = newDir("acl-sv-non-fiable");
+  try {
+    const t = arbreOuvert(base);
+    fs.mkdirSync(t.sauvegardes, { recursive: true });
+    fs.writeFileSync(path.join(t.sauvegardes, "acl-plante.json"), "{}");
+    icacls(t.sauvegardes, "/grant", `*${BU}:(OI)(CI)(M)`); // non réservé à votre compte
+    const avant = t.tous.map((p) => lireAcl(p).sddl);
+    const r = await protegerSecrets(t.secrets);
+    assert.equal(r.etat, "correction_interrompue", JSON.stringify(r.problemes));
+    assert.ok(r.problemes.some((p) => p.code === "sauvegardes_non_fiables"), JSON.stringify(r.problemes));
+    assert.deepEqual(t.tous.map((p) => lireAcl(p).sddl), avant, "dossier des secrets inchangé");
+  } finally { cleanup(base); }
+});

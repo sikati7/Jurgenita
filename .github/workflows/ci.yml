@@ -42,7 +42,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         env:
-          TESTS_WINDOWS_ATTENDUS: 23
+          TESTS_WINDOWS_ATTENDUS: 25
         run: |
           node --test test/windows.test.js | Tee-Object -FilePath windows-tests.txt
           if ($LASTEXITCODE -ne 0) { exit 1 }

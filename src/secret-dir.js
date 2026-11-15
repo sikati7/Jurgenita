@@ -67,7 +67,7 @@ export function vuePosix(fsImpl = fs) {
     lstat(p) {
       try {
         const s = fsImpl.lstatSync(p);
-        return { mode: s.mode & 0o7777, uid: s.uid, gid: s.gid, dossier: s.isDirectory(), fichier: s.isFile(), lien: s.isSymbolicLink() };
+        return { mode: s.mode & 0o7777, uid: s.uid, gid: s.gid, dev: s.dev, ino: s.ino, dossier: s.isDirectory(), fichier: s.isFile(), lien: s.isSymbolicLink() };
       } catch (err) {
         return err.code === "ENOENT" || err.code === "ENOTDIR" ? null : { erreur: err.code || "erreur" };
       }
@@ -328,7 +328,7 @@ export function analyserArbrePosix({ racine, vue, moi, plateforme, acl }) {
       if (st.uid !== 0) problemes.push({ niveau: "dangereux", code: "proprietaire_etranger", bloquant: true, message: `${chemin} appartient à un autre compte (uid ${st.uid}) : il peut en changer les permissions.` });
       if (trop) { problemes.push({ niveau: "dangereux", code: "droits_trop_larges", message: `${chemin} est accessible à d'autres comptes (droits ${octal(st.mode)}) et n'est pas à vous : correction impossible.` }); res.exposition.push(chemin); }
     } else if (trop) {
-      res.aCorriger.push({ chemin, dossier: st.dossier, avant: st.mode, apres: st.mode & (st.dossier ? 0o700 : 0o600) });
+      res.aCorriger.push({ chemin, dossier: st.dossier, avant: st.mode, apres: st.mode & (st.dossier ? 0o700 : 0o600), dev: st.dev, ino: st.ino });
       res.exposition.push(chemin);
     }
     const besoin = st.dossier ? fs.constants.R_OK | fs.constants.W_OK | fs.constants.X_OK : fs.constants.R_OK;
@@ -358,23 +358,30 @@ export function analyserArbrePosix({ racine, vue, moi, plateforme, acl }) {
 
 // Resserrement d'un élément, sur le fichier déjà ouvert (sans suivre de lien),
 // pour qu'un remplacement entre l'analyse et la correction ne puisse rien détourner.
-export function resserrer({ chemin, dossier, avant, apres }, fsImpl = fs) {
+export function resserrer({ chemin, dossier, avant, apres, dev, ino }, fsImpl = fs) {
   const c = fsImpl.constants;
-  const drapeaux = c.O_RDONLY | (c.O_NOFOLLOW || 0) | (dossier && c.O_DIRECTORY ? c.O_DIRECTORY : 0);
+  // O_NOFOLLOW : un lien à la place de l'élément fait échouer l'ouverture (ELOOP).
+  // O_NONBLOCK : ne jamais bloquer sur un tube nommé ou un périphérique déposé à
+  // la place d'un fichier.
+  const drapeaux = c.O_RDONLY | (c.O_NOFOLLOW || 0) | (c.O_NONBLOCK || 0) | (dossier && c.O_DIRECTORY ? c.O_DIRECTORY : 0);
   let fd;
   try {
     fd = fsImpl.openSync(chemin, drapeaux);
   } catch (err) {
-    if (err.code !== "EACCES") throw err;
-    // Vous n'avez pas le droit de lecture (ex. 200) : vérification puis chmod direct.
-    const s = fsImpl.lstatSync(chemin);
-    if (s.isSymbolicLink() || (s.mode & 0o7777) !== avant) throw Object.assign(new Error("élément modifié entre l'analyse et la correction"), { code: "EMODIFIE" });
-    fsImpl.chmodSync(chemin, apres);
-    return;
+    // Aucun repli par chemin (chmodSync suivrait un lien) : on refuse. Un lien
+    // déposé entre l'analyse et la correction donne ELOOP, traité comme une
+    // substitution.
+    throw Object.assign(new Error(`ouverture sécurisée impossible (${err.code})`), { code: err.code === "ELOOP" ? "EMODIFIE" : err.code });
   }
   try {
     const s = fsImpl.fstatSync(fd);
-    if ((s.mode & 0o7777) !== avant) throw Object.assign(new Error("élément modifié entre l'analyse et la correction"), { code: "EMODIFIE" });
+    // Vérification, sur le descripteur même, que l'objet n'a pas été remplacé
+    // depuis l'analyse : type, identité (dev/ino quand connus) et droits.
+    const memeType = dossier ? s.isDirectory() : s.isFile();
+    const memeObjet = (dev === undefined || s.dev === dev) && (ino === undefined || s.ino === ino);
+    if (!memeType || !memeObjet || (s.mode & 0o7777) !== avant) {
+      throw Object.assign(new Error("élément modifié entre l'analyse et la correction"), { code: "EMODIFIE" });
+    }
     fsImpl.fchmodSync(fd, apres);
   } finally {
     fsImpl.closeSync(fd);
@@ -715,6 +722,10 @@ export function validerSauvegarde(sauvegarde, { racine, plateforme = process.pla
       if (s && typeof s === "object" && s.sddl !== undefined && s.sddl !== e.sddl) erreurs.push(`${ou} : deux versions différentes des autorisations`);
     } else if (typeof e.mode !== "string" || !/^[0-7]{3,4}$/.test(e.mode)) {
       erreurs.push(`${ou} : droits invalides (${e.mode})`);
+    } else if (e.mode.length === 4 && (parseInt(e.mode[0], 8) & 0o6)) {
+      // Point 8 : un dossier de secrets n'a jamais besoin de setuid/setgid ;
+      // les restaurer serait dangereux. Le bit sticky (1) reste accepté.
+      erreurs.push(`${ou} : bits setuid ou setgid interdits dans une sauvegarde (${e.mode})`);
     }
     elements.push({ ...e, absolu });
   });
@@ -793,8 +804,27 @@ async function protegerWindows(r, { racine, sauvegardes, mode, fsImpl, ps = win.
       const a2 = win.analyserArbre({ racine: sauvegardes, elements: elementsSauvegardes, jeton, noms });
       if (a2.bloquant) { r.etat = "correction_interrompue"; ajouter(r, a2.problemes, "Dossier des sauvegardes : "); return conseils(); }
     }
+    // Point 2 : ne jamais adopter des sauvegardes existantes dont l'intégrité ne
+    // peut pas être établie. Si le dossier des sauvegardes n'est pas déjà réservé
+    // à votre compte et contient déjà des éléments (ou appartient à un autre
+    // compte), un autre compte a pu y déposer ou y modifier une sauvegarde : on
+    // interrompt sans rien adopter ni modifier.
+    const memeCheminW = (a, b) => path.win32.resolve(a).toLowerCase() === path.win32.resolve(b).toLowerCase();
+    const contenuSv = elementsSauvegardes.filter((e) => e.existe && !e.listeImpossible && !memeCheminW(e.chemin, sauvegardes));
+    const analyseSvActuelle = win.analyserArbre({ racine: sauvegardes, elements: elementsSauvegardes, jeton, noms });
+    if (contenuSv.length || analyseSvActuelle.proprietaires.length) {
+      r.etat = "correction_interrompue";
+      ajouter(r, [{ niveau: "dangereux", code: "sauvegardes_non_fiables", message: `Le dossier des sauvegardes (${afficher(sauvegardes)}) existe sans être réservé à votre compte et contient déjà des éléments : leur intégrité ne peut pas être établie, rien n'a été modifié. Videz ou déplacez ce dossier, ou corrigez ses droits (vous, SYSTEM, Administrateurs uniquement), puis relancez Jurgenita.` }]);
+      ajouter(r, exposition(analyseSecrets));
+      return conseils();
+    }
     const p = await win.protegerArbre({ racine: sauvegardes, elements: elementsSauvegardes, jeton, ps, fsImpl });
     if (!p.ok) {
+      if (p.etape === "preparation") {
+        r.etat = "correction_interrompue";
+        ajouter(r, [{ niveau: "incertain", code: "non_verifiable", message: "Protection par poignée (handle) indisponible sur ce système : le composant de sécurité n'a pas pu être chargé. Rien n'a été modifié." }]);
+        return conseils();
+      }
       r.etat = p.restauration?.ok === false ? p.restauration.etat : "correction_interrompue";
       ajouter(r, [{ niveau: p.restauration?.ok === false ? "dangereux" : "incertain", code: "sauvegarde_impossible", message: `Protection du dossier des sauvegardes échouée (${p.etape} : ${p.detail}) ; ${p.restauration?.ok ? "état d'origine restauré" : "restauration incomplète"} ; rien d'autre n'a été modifié.` }]);
       return conseils();
@@ -831,6 +861,12 @@ async function protegerWindows(r, { racine, sauvegardes, mode, fsImpl, ps = win.
     r.corrections.push(`${afficher(racine)} : héritage coupé ; contrôle total pour vous, SYSTEM et Administrateurs uniquement (${p.corrections} opération(s))`);
     return conseils();
   }
+  if (p.etape === "preparation") {
+    r.etat = "correction_interrompue";
+    ajouter(r, [{ niveau: "incertain", code: "non_verifiable", message: "Protection par poignée (handle) indisponible sur ce système : le composant de sécurité n'a pas pu être chargé (Add-Type). Par prudence, rien n'a été modifié." }]);
+    ajouter(r, exposition(analyseSecrets));
+    return conseils();
+  }
   if (p.etape === "sauvegarde") {
     r.etat = "correction_interrompue";
     ajouter(r, [{ niveau: "incertain", code: "sauvegarde_impossible", message: "Sauvegarde des autorisations impossible : rien n'a été modifié." }]);
@@ -839,7 +875,16 @@ async function protegerWindows(r, { racine, sauvegardes, mode, fsImpl, ps = win.
   }
   if (p.restauration?.ok) {
     r.etat = "correction_interrompue";
-    ajouter(r, [{ niveau: "incertain", code: "correction_annulee", message: `Protection échouée (${p.etape} : ${p.detail}) : autorisations d'origine restaurées et vérifiées.` }]);
+    // Point 7 : une restauration peut réussir pour les droits mais laisser un
+    // propriétaire d'origine non rétabli (droits d'administrateur nécessaires).
+    // On le signale explicitement ; on n'annonce pas « restauré et vérifié ».
+    const nonRetablis = (p.restauration.journal || []).filter((j) => j.code === "proprietaire_non_retabli");
+    if (nonRetablis.length) {
+      ajouter(r, [{ niveau: "dangereux", code: "proprietaire_non_retabli", message: `Protection échouée (${p.etape} : ${p.detail}) : autorisations d'origine restaurées, mais le propriétaire d'origine n'a pas pu être rétabli sur ${nonRetablis.map((j) => afficher(j.chemin)).join(", ")} (droits d'administrateur nécessaires) ; ces éléments restent à votre compte.` }]);
+      r.actions.push(`Rétablissez le propriétaire d'origine en administrateur, ou restaurez manuellement : node scripts/restaurer-droits-secrets.mjs ${r.sauvegarde || "<sauvegarde>"} --appliquer`);
+    } else {
+      ajouter(r, [{ niveau: "incertain", code: "correction_annulee", message: `Protection échouée (${p.etape} : ${p.detail}) : autorisations d'origine restaurées et vérifiées.` }]);
+    }
     ajouter(r, exposition(analyseSecrets));
   } else {
     r.etat = p.restauration?.etat || "critique";

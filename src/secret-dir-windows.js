@@ -168,6 +168,12 @@ if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {
   Write-Output ('@@JG@@' + (ConvertTo-Json -InputObject @{ ok = $false; code = 'langage_restreint' } -Compress))
   exit 0
 }
+# Protection par poignee (handle) : indisponible tant que le type natif n est pas compile.
+$script:jgOk = $false
+function Enable-Jg {
+  if ($script:jgOk) { return }
+  try { Add-Type -TypeDefinition $env:JG_CS | Out-Null; $script:jgOk = $true } catch { $script:jgOk = $false }
+}
 function Out-Jg($o) {
   $j = ConvertTo-Json -InputObject $o -Compress -Depth 12
   $j = [regex]::Replace($j, '[^\\x00-\\x7F]', { param($m) '\\u{0:x4}' -f [int][char]$m.Value })
@@ -207,6 +213,10 @@ function Read-Item($p) {
   $r.existe = $true
   $r.dossier = (($a -band [System.IO.FileAttributes]::Directory) -ne 0)
   $r.reparse = (($a -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
+  # Identite (numero de volume + index de fichier), lue sur une poignee qui ne
+  # suit pas les liens : sert a verifier, au moment d appliquer, que l objet n a
+  # pas ete remplace depuis l inventaire. Liens et jonctions sont deja bloquants.
+  if ($script:jgOk -and -not $r.reparse) { try { $r.id = [JgSec]::Identite($p) } catch { } }
   try {
     if ($r.dossier) { $acl = [System.IO.Directory]::GetAccessControl($p, $sections) } else { $acl = [System.IO.File]::GetAccessControl($p, $sections) }
     $r.securite = Read-Sec $acl
@@ -242,6 +252,7 @@ function Read-Volume($p) {
   } catch { $v.erreur = $_.Exception.GetType().Name }
   return $v
 }
+Enable-Jg
 $in = $env:JG_ENTREE | ConvertFrom-Json
 $jeton = Read-Jeton
 $script:moi = $jeton.utilisateur
@@ -259,17 +270,38 @@ foreach ($c in $in.chemins) { [void]$chemins.Add((Read-Item $c)) }
 Out-Jg @{ ok = $true; jeton = $jeton; arbres = $arbres.ToArray(); chemins = $chemins.ToArray(); noms = $noms }
 `;
 
+// Application des autorisations SUR UNE POIGNÉE ouverte sans suivre les liens ni
+// les jonctions (FILE_FLAG_OPEN_REPARSE_POINT + FILE_FLAG_BACKUP_SEMANTICS).
+// Avant chaque écriture, sur cette même poignée : refus d'un point d'analyse,
+// vérification du type attendu et de l'identité (numéro de volume + index de
+// fichier) relevée à l'inventaire. L'ACL est posée par SetSecurityInfo
+// (SE_KERNEL_OBJECT), qui matérialise l'héritage ; aucun second passage par le
+// chemin. Si l'identité ne peut pas être garantie, l'opération échoue sans rien
+// appliquer. Les descripteurs sont construits ici par .NET (RawSecurityDescriptor).
 const SCRIPT_APPLIQUER = `${PRELUDE}
+Enable-Jg
+if (-not $script:jgOk) { Out-Jg @{ ok = $false; code = 'protection_poignee_indisponible' }; exit 0 }
 $in = $env:JG_OPERATIONS | ConvertFrom-Json
 $res = New-Object System.Collections.ArrayList
 foreach ($op in $in.ops) {
   try {
-    $dir = [System.IO.Directory]::Exists($op.chemin)
-    if ($dir) { $s = New-Object System.Security.AccessControl.DirectorySecurity } else { $s = New-Object System.Security.AccessControl.FileSecurity }
-    if ($op.action -eq 'proprietaire') { $s.SetOwner([System.Security.Principal.SecurityIdentifier]::new($op.sid)) }
-    elseif ($op.action -eq 'dacl') { $s.SetSecurityDescriptorSddlForm($op.sddl, [System.Security.AccessControl.AccessControlSections]::Access) }
+    if ($op.action -eq 'proprietaire') {
+      $sid = [System.Security.Principal.SecurityIdentifier]::new([string]$op.sid)
+      $ob = New-Object byte[] $sid.BinaryLength
+      $sid.GetBinaryForm($ob, 0)
+      $r = [JgSec]::Appliquer([string]$op.chemin, [bool]$op.dossier, [string]$op.id, $ob, $null, [uint32]1)
+    }
+    elseif ($op.action -eq 'dacl') {
+      $raw = [System.Security.AccessControl.RawSecurityDescriptor]::new([string]$op.sddl)
+      if ($null -eq $raw.DiscretionaryAcl) { throw 'liste d autorisations absente' }
+      $db = New-Object byte[] $raw.DiscretionaryAcl.BinaryLength
+      $raw.DiscretionaryAcl.GetBinaryForm($db, 0)
+      # 0x4 = DACL ; 0x80000000 = protegee (heritage coupe), 0x40000000 = heritee.
+      if (($raw.ControlFlags -band [System.Security.AccessControl.ControlFlags]::DiscretionaryAclProtected) -ne 0) { $si = [uint32]2147483652 } else { $si = [uint32]1073741828 }
+      $r = [JgSec]::Appliquer([string]$op.chemin, [bool]$op.dossier, [string]$op.id, $null, $db, $si)
+    }
     else { throw 'action inconnue' }
-    if ($dir) { [System.IO.Directory]::SetAccessControl($op.chemin, $s) } else { [System.IO.File]::SetAccessControl($op.chemin, $s) }
+    if ($r -ne '') { [void]$res.Add(@{ ok = $false; erreur = $r }); break }
     [void]$res.Add(@{ ok = $true })
   } catch {
     [void]$res.Add(@{ ok = $false; erreur = $_.Exception.GetType().Name; message = [string]$_.Exception.Message })
@@ -326,6 +358,78 @@ Out-Jg @{ ok = $true; resultats = $res.ToArray() }
 
 export const SCRIPTS = { inspecter: SCRIPT_INSPECTER, appliquer: SCRIPT_APPLIQUER, diagnostiquer: SCRIPT_DIAGNOSTIQUER, convertir: SCRIPT_CONVERTIR };
 
+// Type natif (compilé par Add-Type) : ouverture d'une poignée sans suivre les
+// liens ni les jonctions, lecture de l'identité (volume + index), application
+// des autorisations sur la poignée vérifiée. Passé par une variable
+// d'environnement (jamais la ligne de commande) : il peut donc contenir des
+// guillemets doubles sans risque d'altération. Les scripts PowerShell, eux,
+// restent sans guillemet double.
+export const CS_HELPER = `
+using System;
+using System.Runtime.InteropServices;
+public static class JgSec {
+  [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+  static extern IntPtr CreateFileW(string path, uint access, uint share, IntPtr sec, uint disposition, uint flags, IntPtr template);
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern bool GetFileInformationByHandle(IntPtr handle, out BY_HANDLE_FILE_INFORMATION info);
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern bool CloseHandle(IntPtr handle);
+  [DllImport("advapi32.dll", SetLastError = true)]
+  static extern uint SetSecurityInfo(IntPtr handle, int objectType, uint securityInfo, byte[] owner, byte[] group, byte[] dacl, byte[] sacl);
+  [StructLayout(LayoutKind.Sequential)]
+  struct BY_HANDLE_FILE_INFORMATION {
+    public uint FileAttributes;
+    public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+    public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+    public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+    public uint VolumeSerialNumber;
+    public uint FileSizeHigh;
+    public uint FileSizeLow;
+    public uint NumberOfLinks;
+    public uint FileIndexHigh;
+    public uint FileIndexLow;
+  }
+  const uint OPEN_EXISTING = 3;
+  const uint FLAG_BACKUP = 0x02000000;
+  const uint FLAG_REPARSE = 0x00200000;
+  const uint READ_CONTROL = 0x00020000;
+  const uint WRITE_DAC = 0x00040000;
+  const uint WRITE_OWNER = 0x00080000;
+  const uint READ_ATTR = 0x00000080;
+  const uint SHARE_ALL = 7;
+  const uint ATTR_REPARSE = 0x400;
+  const uint ATTR_DIRECTORY = 0x10;
+  static readonly IntPtr INVALID = new IntPtr(-1);
+  static string Ident(BY_HANDLE_FILE_INFORMATION i) { return i.VolumeSerialNumber + ":" + i.FileIndexHigh + ":" + i.FileIndexLow; }
+  public static string Identite(string chemin) {
+    IntPtr h = CreateFileW(chemin, READ_ATTR, SHARE_ALL, IntPtr.Zero, OPEN_EXISTING, FLAG_BACKUP | FLAG_REPARSE, IntPtr.Zero);
+    if (h == INVALID) return "";
+    try { BY_HANDLE_FILE_INFORMATION i; if (!GetFileInformationByHandle(h, out i)) return ""; return Ident(i); }
+    finally { CloseHandle(h); }
+  }
+  public static string Appliquer(string chemin, bool attenduDossier, string idAttendu, byte[] owner, byte[] dacl, uint securityInfo) {
+    uint acces = READ_CONTROL | READ_ATTR;
+    if (owner != null) acces |= WRITE_OWNER;
+    if (dacl != null) acces |= WRITE_DAC;
+    IntPtr h = CreateFileW(chemin, acces, SHARE_ALL, IntPtr.Zero, OPEN_EXISTING, FLAG_BACKUP | FLAG_REPARSE, IntPtr.Zero);
+    if (h == INVALID) return "ouverture:" + Marshal.GetLastWin32Error();
+    try {
+      BY_HANDLE_FILE_INFORMATION i;
+      if (!GetFileInformationByHandle(h, out i)) return "info:" + Marshal.GetLastWin32Error();
+      if ((i.FileAttributes & ATTR_REPARSE) != 0) return "reparse";
+      bool dossier = (i.FileAttributes & ATTR_DIRECTORY) != 0;
+      if (dossier != attenduDossier) return "type";
+      if (idAttendu != null && idAttendu.Length > 0 && Ident(i) != idAttendu) return "identite";
+      uint rc = SetSecurityInfo(h, 6, securityInfo, owner, null, dacl, null);
+      if (rc != 0) return "application:" + rc;
+      return "";
+    } finally { CloseHandle(h); }
+  }
+}
+`;
+// Scripts ayant besoin du type natif (reçu par l'environnement, jamais la ligne de commande).
+const BESOIN_CS = new Set(["inspecter", "appliquer"]);
+
 // Outils système appelés par leur chemin complet, jamais par le PATH : pas
 // d'homonyme (Git Bash fournit son propre whoami) ni de programme placé plus
 // tôt dans le PATH pour fausser le jeton ou les autorisations lues.
@@ -342,9 +446,12 @@ export function environnementPowerShell(env = {}) {
 }
 
 export function executerPowerShell(nom, env = {}, { delaiMs = 30000 } = {}) {
+  // Le type natif n'est fourni qu'aux scripts qui en ont besoin, par
+  // l'environnement : aucune altération possible par la ligne de commande.
+  const envComplet = BESOIN_CS.has(nom) ? { ...env, JG_CS: CS_HELPER } : env;
   return new Promise((resolve) => {
     execFile(cheminPowerShell(), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", SCRIPTS[nom]], {
-      env: environnementPowerShell(env), windowsHide: true, timeout: delaiMs, maxBuffer: 32 * 1024 * 1024, encoding: "latin1",
+      env: environnementPowerShell(envComplet), windowsHide: true, timeout: delaiMs, maxBuffer: 32 * 1024 * 1024, encoding: "latin1",
     }, (err, stdout) => {
       const i = stdout ? stdout.lastIndexOf("@@JG@@") : -1;
       if (i < 0) return resolve({ ok: false, code: err?.killed ? "delai_depasse" : "powershell_indisponible", detail: err ? String(err.code || "").slice(0, 80) : "sortie vide" });
@@ -375,7 +482,8 @@ export function ancetres(p) {
 }
 export const wpathJoin = (...morceaux) => wpath.join(...morceaux);
 export const relatifWin = (racine, p) => { const x = wpath.relative(racine, p); return x ? x.split("\\").join("/") : "."; };
-const memeChemin = (a, b) => wpath.resolve(a).toLowerCase() === wpath.resolve(b).toLowerCase();
+const memeCle = (p) => wpath.resolve(p).toLowerCase();
+const memeChemin = (a, b) => memeCle(a) === memeCle(b);
 const profondeur = (p) => wpath.resolve(p).split(/[\\/]+/).filter(Boolean).length;
 const liste = (v) => (Array.isArray(v) ? v : v === undefined || v === null ? [] : [v]);
 
@@ -583,11 +691,15 @@ export function memesDroitsEffectifs(a, b, jeton = null) {
 async function appliquer(ps, ops) {
   if (!ops.length) return { ok: true };
   const r = await ps("appliquer", { JG_OPERATIONS: JSON.stringify({ ops }) });
-  if (!r.ok) return { ok: false, index: 0, erreur: r.code || "powershell" };
+  // Échec au niveau du processus (PowerShell indisponible, délai dépassé, sortie
+  // illisible, type natif absent) : on ne sait PAS combien d'opérations ont été
+  // appliquées. `inconnu` déclenche une restauration prudente de tous les
+  // propriétaires susceptibles d'avoir changé (point 6).
+  if (!r.ok) return { ok: false, inconnu: true, index: ops.length, erreur: r.code || "powershell" };
   const resultats = liste(r.resultats);
   const i = resultats.findIndex((x) => !x.ok);
   if (i >= 0) return { ok: false, index: i, erreur: resultats[i].erreur, message: resultats[i].message };
-  if (resultats.length !== ops.length) return { ok: false, index: resultats.length, erreur: "incomplet" };
+  if (resultats.length !== ops.length) return { ok: false, inconnu: true, index: ops.length, erreur: "incomplet" };
   return { ok: true };
 }
 
@@ -648,10 +760,10 @@ export async function restaurer({ racine, instantane, ps, proprietairesModifies 
   const enfants = instantane.filter((e) => e !== principal).sort((a, b) => profondeur(b.chemin) - profondeur(a.chemin));
   const restaurerElement = async (e) => {
     if (proprietairesModifies.some((p) => memeChemin(p, e.chemin)) && e.securite?.proprietaire) {
-      const o = await appliquer(ps, [{ action: "proprietaire", chemin: e.chemin, sid: e.securite.proprietaire }]);
+      const o = await appliquer(ps, [{ action: "proprietaire", chemin: e.chemin, sid: e.securite.proprietaire, id: e.id, dossier: !!e.dossier }]);
       if (!o.ok) journal.push({ chemin: e.chemin, code: "proprietaire_non_retabli" });
     }
-    return appliquer(ps, [{ action: "dacl", chemin: e.chemin, sddl: e.securite.sddl }]);
+    return appliquer(ps, [{ action: "dacl", chemin: e.chemin, sddl: e.securite.sddl, id: e.id, dossier: !!e.dossier }]);
   };
   for (const e of enfants) {
     const r = await restaurerElement(e);
@@ -686,16 +798,24 @@ export async function restaurer({ racine, instantane, ps, proprietairesModifies 
 // remplacement de l'ACL du dossier principal en un seul appel, éléments
 // contenus remis en héritage pur, vérification, restauration si échec.
 export async function protegerArbre({ racine, elements, jeton, ps, fsImpl = fs, sauvegarder = null, sonde = true }) {
-  const instantane = elements.filter((e) => e.existe && e.securite && !e.listeImpossible).map((e) => ({ chemin: e.chemin, dossier: !!e.dossier, securite: e.securite }));
+  const items = elements.filter((e) => e.existe && e.securite && !e.listeImpossible);
+  const instantane = items.map((e) => ({ chemin: e.chemin, dossier: !!e.dossier, securite: e.securite, id: e.id }));
+  // Identité (volume + index) indispensable pour vérifier, au moment d'appliquer,
+  // que l'objet n'a pas été remplacé depuis l'inventaire. Si elle manque (type
+  // natif indisponible), on interrompt sans rien appliquer ni sauvegarder :
+  // jamais d'écriture d'ACL à travers un chemin dont l'objet n'est pas garanti.
+  if (instantane.some((e) => !e.id)) return { ok: false, etape: "preparation", detail: "identite_indisponible", instantane };
   if (sauvegarder) {
     try { await sauvegarder(instantane); } catch (err) { return { ok: false, etape: "sauvegarde", detail: err?.message }; }
   }
   const analyse = analyserArbre({ racine, elements, jeton });
+  const parChemin = new Map(items.map((e) => [memeCle(e.chemin), e]));
+  const infos = (p) => parChemin.get(memeCle(p)) || {};
   const ops = [];
-  for (const p of analyse.proprietaires) ops.push({ action: "proprietaire", chemin: p, sid: jeton.utilisateur });
-  if (analyse.racineACorriger) ops.push({ action: "dacl", chemin: racine, sddl: sddlCible(jeton.utilisateur) });
+  for (const p of analyse.proprietaires) { const e = infos(p); ops.push({ action: "proprietaire", chemin: p, sid: jeton.utilisateur, id: e.id, dossier: !!e.dossier }); }
+  if (analyse.racineACorriger) { const e = infos(racine); ops.push({ action: "dacl", chemin: racine, sddl: sddlCible(jeton.utilisateur), id: e.id, dossier: true }); }
   const enfants = [...analyse.aCorriger].sort((a, b) => profondeur(a) - profondeur(b)); // du haut vers le bas
-  for (const c of enfants) ops.push({ action: "dacl", chemin: c, sddl: SDDL_HERITAGE_SEUL });
+  for (const c of enfants) { const e = infos(c); ops.push({ action: "dacl", chemin: c, sddl: SDDL_HERITAGE_SEUL, id: e.id, dossier: !!e.dossier }); }
   const app = await appliquer(ps, ops);
   let echec = app.ok ? null : { etape: "application", detail: app.erreur, index: app.index };
   if (!echec) {
@@ -718,7 +838,13 @@ export async function protegerArbre({ racine, elements, jeton, ps, fsImpl = fs, 
     }
   }
   if (!echec) return { ok: true, corrections: ops.length, instantane };
-  const proprietairesModifies = app.ok ? analyse.proprietaires : analyse.proprietaires.slice(0, Math.min(app.index, analyse.proprietaires.length));
+  // Point 6 : si toutes les opérations ont pu passer (échec en vérification) ou
+  // si leur sort est inconnu (échec du processus), on considère tous les
+  // propriétaires comme possiblement modifiés et on les restaure tous. Sinon,
+  // seuls ceux des opérations réellement atteintes (les propriétaires d'abord).
+  const proprietairesModifies = (app.ok || app.inconnu)
+    ? analyse.proprietaires
+    : analyse.proprietaires.slice(0, Math.min(app.index, analyse.proprietaires.length));
   const restauration = await restaurer({ racine, instantane, ps, proprietairesModifies, jeton });
   return { ok: false, ...echec, restauration, instantane };
 }

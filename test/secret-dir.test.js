@@ -441,7 +441,7 @@ function modeleWindows(initial, jeton) {
   const ps = async (nom, env) => {
     if (nom === "inspecter") {
       const e = JSON.parse(env.JG_ENTREE);
-      return { ok: true, jeton: { utilisateur: jeton.utilisateur, actifs: jeton.actifs, refus: jeton.refus }, chemins: [], noms: {}, arbres: e.arbres.map((r) => ({ racine: r, volume: { format: "NTFS", type: "Fixed" }, elements: [...etat.keys()].filter((k) => k === r || k.startsWith(`${r}\\`)).map((k) => ({ chemin: k, existe: true, dossier: etat.get(k).dossier, reparse: false, securite: securite(k) })) })) };
+      return { ok: true, jeton: { utilisateur: jeton.utilisateur, actifs: jeton.actifs, refus: jeton.refus }, chemins: [], noms: {}, arbres: e.arbres.map((r) => ({ racine: r, volume: { format: "NTFS", type: "Fixed" }, elements: [...etat.keys()].filter((k) => k === r || k.startsWith(`${r}\\`)).map((k) => ({ chemin: k, existe: true, dossier: etat.get(k).dossier, reparse: false, id: `sim:${k}`, securite: securite(k) })) })) };
     }
     const { ops } = JSON.parse(env.JG_OPERATIONS);
     const resultats = [];
@@ -595,6 +595,51 @@ test("droits effectifs comparés compte par compte : l'ordre des autorisations n
   assert.ok(!win.memesDroitsEffectifs(sec(refusAvant), sec([...refusAvant].reverse()), j), "un refus déplacé après l'autorisation change les droits");
 });
 
+test("Windows (simulé) : chaque opération porte l'identité et le type ; identité absente → correction interrompue (point 1)", async () => {
+  const { j, R, m } = scenarioWindows();
+  const opsVues = [];
+  const psEspion = async (nom, env) => { if (nom === "appliquer") opsVues.push(...JSON.parse(env.JG_OPERATIONS).ops); return m.ps(nom, env); };
+  const ok = await win.protegerArbre({ racine: R, elements: await elementsDe(m, R), jeton: j, ps: psEspion, fsImpl: FS_NUL });
+  assert.equal(ok.ok, true, JSON.stringify(ok));
+  assert.ok(opsVues.length > 0 && opsVues.every((o) => typeof o.id === "string" && o.id.length > 0 && typeof o.dossier === "boolean"), "chaque opération porte id + dossier");
+  // Identité indisponible (type natif non compilé) → interruption avant toute opération.
+  const sansId = (await elementsDe(m, R)).map((e) => ({ ...e, id: undefined }));
+  const avant = m.journal.length;
+  const r = await win.protegerArbre({ racine: R, elements: sansId, jeton: j, ps: m.ps, fsImpl: FS_NUL });
+  assert.equal(r.ok, false);
+  assert.equal(r.etape, "preparation");
+  assert.equal(m.journal.length, avant, "aucune opération appliquée");
+});
+
+test("Windows (simulé) : résultat d'application inconnu → tous les propriétaires sont restaurés (point 6)", async () => {
+  const { j, R, m } = scenarioWindows();
+  let premier = true;
+  // La première application échoue au niveau du processus : sort inconnu.
+  const psInconnu = async (nom, env) => {
+    if (nom === "appliquer" && premier) { premier = false; return { ok: false, code: "delai_depasse" }; }
+    return m.ps(nom, env);
+  };
+  const r = await win.protegerArbre({ racine: R, elements: await elementsDe(m, R), jeton: j, ps: psInconnu, fsImpl: FS_NUL });
+  assert.equal(r.ok, false);
+  // Le propriétaire de brands (seul possiblement modifié) a été restauré malgré le sort inconnu.
+  assert.ok(m.journal.some((l) => l === `proprietaire:proprietaire:${R}\\brands`), m.journal.join("\n"));
+});
+
+test("Windows (simulé) : propriétaire non rétabli pendant la restauration → journalisé (point 7)", async () => {
+  const { j, R, m } = scenarioWindows();
+  const instantane = (await elementsDe(m, R)).map((e) => ({ chemin: e.chemin, dossier: e.dossier, id: e.id, securite: e.securite }));
+  // ps dont TOUTE opération « propriétaire » échoue (droits d'administrateur manquants).
+  const psOwnerKO = async (nom, env) => {
+    if (nom === "appliquer") {
+      const { ops } = JSON.parse(env.JG_OPERATIONS);
+      if (ops.some((o) => o.action === "proprietaire")) return { ok: true, resultats: ops.map((o) => (o.action === "proprietaire" ? { ok: false, erreur: "AccessDenied" } : { ok: true })) };
+    }
+    return m.ps(nom, env);
+  };
+  const r = await win.restaurer({ racine: R, instantane, ps: psOwnerKO, proprietairesModifies: [`${R}\\brands`], jeton: j });
+  assert.ok((r.journal || []).some((x) => x.code === "proprietaire_non_retabli" && x.chemin === `${R}\\brands`), JSON.stringify(r.journal));
+});
+
 test("sauvegarde : jamais écrasée — nom déjà pris = autre nom, sinon échec ; l'existante reste intacte ; aucun temporaire laissé", () => {
   const d = base("ecriture");
   const existante = path.join(d, "pris.json");
@@ -623,6 +668,10 @@ test("sauvegarde altérée ou invalide : refusée avant toute restauration (chem
   for (const chemin of ["../hors", "/etc/passwd", "brands/../../hors", "a//b", "a/./b", "C:x", "a\\b", ""]) assert.equal(altere((b) => { b.elements[1].chemin = chemin; }).ok, false, `chemin ${JSON.stringify(chemin)}`);
   assert.equal(altere((b) => { b.elements[1].mode = "999"; }).ok, false, "droits impossibles");
   assert.equal(altere((b) => { b.elements[1].mode = 420; }).ok, false, "droits non textuels");
+  // Point 8 : setuid (4000) et setgid (2000) interdits ; sticky (1000) toléré.
+  assert.equal(altere((b) => { b.elements[1].mode = "4600"; }).ok, false, "setuid interdit");
+  assert.equal(altere((b) => { b.elements[1].mode = "2700"; }).ok, false, "setgid interdit");
+  assert.equal(altere((b) => { b.elements[0].mode = "1755"; }).ok, true, "sticky toléré");
   assert.equal(altere((b) => { b.elements[1].type = "lien"; }).ok, false, "type inconnu");
   assert.equal(altere((b) => { b.elements.push({ ...b.elements[1] }); }).ok, false, "élément en double");
   assert.equal(altere((b) => { b.racine = "/autre"; }).ok, false, "autre dossier des secrets");
@@ -977,6 +1026,71 @@ test("POSIX (réel, root) : sauvegarde appartenant à un autre compte → refus�
   const r = restaurerAvec(i, copie, "--appliquer");
   assert.equal(r.status, 4, r.stdout + r.stderr);
   assert.match(r.stderr, /Sauvegarde altérée : le fichier appartient à un autre compte/);
+});
+
+test("POSIX (réel) : resserrer refuse un objet remplacé (lien, type ou identité), sans repli par chemin (point 5)", surPosix, async () => {
+  const b = base("resserrer-id");
+  const cible = path.join(b, "f.json");
+  const externe = path.join(b, "externe.json");
+  fs.writeFileSync(externe, "SECRET");
+  fs.chmodSync(externe, 0o644);
+  fs.writeFileSync(cible, "{}");
+  fs.chmodSync(cible, 0o666);
+  const st = fs.lstatSync(cible);
+  const c = { chemin: cible, dossier: false, avant: 0o666, apres: 0o600, dev: st.dev, ino: st.ino };
+  // Remplacé par un lien : O_NOFOLLOW fait échouer l'ouverture, aucun chmod par chemin.
+  fs.rmSync(cible);
+  fs.symlinkSync(externe, cible);
+  assert.throws(() => sd.resserrer(c, fs), (e) => e.code === "EMODIFIE", "lien refusé");
+  assert.equal(fs.lstatSync(externe).mode & 0o7777, 0o644, "cible extérieure intacte");
+  // Identité enregistrée différente de l'objet réel → refus (le numéro d'inode
+  // peut être réutilisé après suppression : on vérifie avec un ino explicite).
+  fs.rmSync(cible);
+  fs.writeFileSync(cible, "{}");
+  fs.chmodSync(cible, 0o666);
+  const vrai = fs.lstatSync(cible);
+  assert.throws(() => sd.resserrer({ chemin: cible, dossier: false, avant: 0o666, apres: 0o600, dev: vrai.dev, ino: vrai.ino + 1 }, fs), (e) => e.code === "EMODIFIE", "identité différente refusée");
+  assert.equal(fs.lstatSync(cible).mode & 0o7777, 0o666, "non modifié quand l'identité ne correspond pas");
+  // Type changé (dossier à la place d'un fichier) : refusé.
+  fs.rmSync(cible);
+  fs.mkdirSync(cible, { mode: 0o755 });
+  assert.throws(() => sd.resserrer({ ...c, dev: undefined, ino: undefined }, fs), (e) => e.code === "EMODIFIE", "type changé refusé");
+});
+
+test("POSIX (réel) : parent du dossier des secrets exposé → restauration refusée, même avec un dossier des sauvegardes sûr (point 3)", surPosixNonRoot, async () => {
+  const b = base("p3");
+  const coffre = path.join(b, "coffre");
+  const secrets = path.join(coffre, "secrets");
+  const sauvegardes = path.join(b, "sv"); // ailleurs ; son parent (b) reste sûr
+  fs.mkdirSync(secrets, { recursive: true });
+  fs.mkdirSync(sauvegardes, { mode: 0o700 });
+  fs.writeFileSync(path.join(secrets, "google-token.json"), "{}");
+  fs.chmodSync(coffre, 0o755); fs.chmodSync(secrets, 0o755); fs.chmodSync(sauvegardes, 0o700);
+  const env = { ...process.env, JURGENITA_SECRETS_DIR: secrets, JURGENITA_SECRETS_BACKUP_DIR: sauvegardes, JURGENITA_SECRETS_PERMISSIONS: "" };
+  const corr = spawnSync(process.execPath, ["--input-type=module", "-e", `const sd=await import(${JSON.stringify(srcUrl("secret-dir.js"))});const r=await sd.ensureSecretsDir();process.stdout.write(r.etat);`], { encoding: "utf8", cwd: root, env });
+  assert.equal(corr.stdout, "corrige", corr.stderr);
+  const [nom] = fs.readdirSync(sauvegardes).filter((f) => f.endsWith(".json"));
+  // Le parent du dossier des secrets devient modifiable par tous ; les sauvegardes restent sûres.
+  fs.chmodSync(coffre, 0o777);
+  const r = spawnSync(process.execPath, [path.join(root, "scripts", "restaurer-droits-secrets.mjs"), path.join(sauvegardes, nom), "--appliquer"], { encoding: "utf8", env });
+  assert.equal(r.status, 4, r.stdout + r.stderr);
+  assert.match(r.stderr, /Restauration refusée par prudence/);
+  assert.match(r.stderr, /modifiable par tous|appartient|écrire/);
+});
+
+test("POSIX (réel) : fichier de sauvegarde remplacé par un lien → lecture refusée sans suivre le lien (point 4)", surPosix, async () => {
+  const { i, sauvegarde } = await installationCorrigee("p4-lien");
+  const externe = path.join(i.b, "externe.json");
+  fs.writeFileSync(externe, JSON.stringify({ secret: "ne doit pas être lu comme sauvegarde" }));
+  const lien = path.join(i.sauvegardes, "lien.json");
+  fs.symlinkSync(externe, lien);
+  const r = restaurerAvec(i, lien, "--appliquer");
+  assert.equal(r.status, 3, r.stdout + r.stderr);
+  assert.match(r.stderr, /illisible/i);
+  assert.equal(fs.readFileSync(externe, "utf8").includes("ne doit pas"), true, "cible du lien jamais traitée comme sauvegarde");
+  // Le lien retiré, la sauvegarde d'origine reste utilisable.
+  fs.rmSync(lien);
+  assert.equal(restaurerAvec(i, sauvegarde).status, 0);
 });
 
 test("nettoyage : les sauvegardes créées par un test sont supprimées même quand ce test échoue", async () => {
