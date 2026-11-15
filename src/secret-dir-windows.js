@@ -296,14 +296,14 @@ foreach ($op in $in.ops) {
       if ($null -eq $raw.DiscretionaryAcl) { throw 'liste d autorisations absente' }
       # On ne pose QUE les entrees explicites (non heritees). Windows recalcule
       # les entrees heritees ; les poser soi-meme (drapeau ID) corromprait la
-      # liste et pourrait retirer l acces au proprietaire lui-meme.
-      $explicites = [System.Security.AccessControl.RawAcl]::new([byte]$raw.DiscretionaryAcl.Revision, 0)
-      $i = 0
-      foreach ($ace in $raw.DiscretionaryAcl) {
-        if (-not ($ace.AceFlags -band [System.Security.AccessControl.AceFlags]::Inherited)) { $explicites.InsertAce($i, $ace); $i++ }
+      # liste et pourrait retirer l acces au proprietaire lui-meme. On les retire
+      # en place (une ACE appartenant deja a une liste ne peut pas etre reinseree).
+      $acl = $raw.DiscretionaryAcl
+      for ($k = $acl.Count - 1; $k -ge 0; $k--) {
+        if (($acl[$k].AceFlags -band [System.Security.AccessControl.AceFlags]::Inherited) -ne 0) { $acl.RemoveAce($k) }
       }
-      $db = New-Object byte[] $explicites.BinaryLength
-      $explicites.GetBinaryForm($db, 0)
+      $db = New-Object byte[] $acl.BinaryLength
+      $acl.GetBinaryForm($db, 0)
       # 0x4 = DACL ; 0x80000000 = protegee (heritage coupe), 0x40000000 = heritee.
       if (($raw.ControlFlags -band [System.Security.AccessControl.ControlFlags]::DiscretionaryAclProtected) -ne 0) { $si = [uint32]2147483652 } else { $si = [uint32]1073741828 }
       $r = [JgSec]::Appliquer([string]$op.chemin, [bool]$op.dossier, [string]$op.id, $null, $db, $si)
