@@ -199,14 +199,22 @@ node scripts/restaurer-droits-secrets.mjs data/secret-permissions-backups/<fichi
 
 - La première commande affiche un aperçu, sans rien modifier.
 - La seconde restaure les droits (le contenu d'abord, le dossier principal en dernier) et les vérifie, droits effectifs compris.
-- Le script refuse par prudence (code 4) si un autre compte peut modifier le dossier des sauvegardes ou l'un de ses dossiers parents.
+- Le script lit d'abord le fichier de sauvegarde par un descripteur vérifié, sans suivre de lien, puis contrôle son contenu.
+- Le script refuse par prudence (code 4) si un autre compte peut modifier le dossier des sauvegardes **ou l'un de ses dossiers parents, ou l'un des dossiers parents du dossier des secrets**.
 - Il refuse aussi une sauvegarde altérée, sans rien modifier :
-  - fichier de sauvegarde dont le propriétaire ou les autorisations ne sont plus ceux attendus (vous, SYSTEM et Administrateurs uniquement) : code 4 ;
-  - contenu incohérent (code 3) : chemin hors du dossier des secrets, droits ou type invalides, ou, sous Windows, autorisations à appliquer qui ne correspondent pas à l'état enregistré.
-- Sous Windows, le propriétaire, la protection et les autorisations explicites sont rétablis à l'identique. Les autorisations héritées sont recalculées par Windows : même ensemble, ordre parfois différent, mêmes droits effectifs (vérifiés compte par compte).
+  - fichier de sauvegarde dont le propriétaire ou les autorisations ne sont plus ceux attendus (vous — ou root sous Linux et macOS — ; sous Windows vous, SYSTEM et Administrateurs uniquement) : code 4 ;
+  - contenu incohérent (code 3) : chemin hors du dossier des secrets, droits invalides, bits setuid ou setgid, ou, sous Windows, autorisations à appliquer qui ne correspondent pas à l'état enregistré ;
+  - un élément qui a changé de type ou est devenu un lien depuis la sauvegarde (code 4).
+- Avant d'écrire, chaque élément est rouvert par un descripteur (Linux, macOS) ou une poignée qui ne suit pas les liens (Windows), et son type et son identité sont revérifiés : un objet remplacé entre la vérification et l'écriture est refusé, jamais modifié à travers le chemin.
+- Sous Windows, la protection et les autorisations explicites sont rétablies à l'identique. Les autorisations héritées sont recalculées par Windows : même ensemble, ordre parfois différent, mêmes droits effectifs (vérifiés compte par compte). **Rétablir le propriétaire d'origine d'un élément qui appartient à un autre compte demande des droits d'administrateur** : sans eux, le propriétaire n'est pas rétabli et le script le signale explicitement (code de sortie 1), sans prétendre que la restauration est complète.
 - Sous Windows, `icacls data\secrets /reset /T /C /Q` rétablit simplement les autorisations héritées du dossier parent.
+- Les éléments créés **après** la sauvegarde ne figurent pas dedans : ils ne sont ni restaurés ni signalés par le script.
 
 **Sauvegardes jamais écrasées** : chaque correction crée un nouveau fichier ; une sauvegarde existante n'est jamais remplacée. Si la sauvegarde ne peut pas être écrite, aucune permission du dossier des secrets n'est modifiée.
+
+**Sauvegardes jamais adoptées** : si le dossier des sauvegardes existe déjà sans être réservé à votre compte et contient déjà des fichiers, leur intégrité ne peut pas être établie. Jurgenita interrompt alors la correction sans rien modifier ni s'approprier ces fichiers ; videz ou déplacez ce dossier (ou corrigez ses droits), puis relancez.
+
+**Sous Windows, protection posée sur une poignée** : au moment d'appliquer une autorisation, Jurgenita ouvre chaque élément par une poignée qui ne suit ni les liens ni les jonctions, et vérifie son identité. Un élément remplacé entre l'inventaire et l'écriture (par un lien, une jonction ou un autre objet) est refusé : aucune autorisation n'est jamais appliquée à travers un chemin détourné. Si ce composant de sécurité ne peut pas être chargé, la correction est interrompue plutôt que faite de façon approximative.
 
 **Emplacement des sauvegardes** : par défaut, à côté du dossier des secrets. Vous pouvez le changer avec `JURGENITA_SECRETS_BACKUP_DIR`, mais jamais à l'intérieur du dossier des secrets, ni l'inverse : la correction serait alors interrompue.
 
