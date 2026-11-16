@@ -292,20 +292,18 @@ foreach ($op in $in.ops) {
       $r = [JgSec]::Appliquer([string]$op.chemin, [bool]$op.dossier, [string]$op.id, $ob, $null, [uint32]1)
     }
     elseif ($op.action -eq 'dacl') {
-      $raw = [System.Security.AccessControl.RawSecurityDescriptor]::new([string]$op.sddl)
-      if ($null -eq $raw.DiscretionaryAcl) { throw 'liste d autorisations absente' }
-      # On ne pose QUE les entrees explicites (non heritees). Windows recalcule
-      # les entrees heritees ; les poser soi-meme (drapeau ID) corromprait la
-      # liste et pourrait retirer l acces au proprietaire lui-meme. On les retire
-      # en place (une ACE appartenant deja a une liste ne peut pas etre reinseree).
-      $acl = $raw.DiscretionaryAcl
-      for ($k = $acl.Count - 1; $k -ge 0; $k--) {
-        if (($acl[$k].AceFlags -band [System.Security.AccessControl.AceFlags]::Inherited) -ne 0) { $acl.RemoveAce($k) }
-      }
-      $db = New-Object byte[] $acl.BinaryLength
-      $acl.GetBinaryForm($db, 0)
+      # On ne pose QUE les entrees explicites : Windows recalcule les entrees
+      # heritees. Les poser soi-meme (drapeau ID) corromprait la liste et pourrait
+      # retirer l acces au proprietaire lui-meme. CommonSecurityDescriptor offre
+      # RemoveInheritedAces(), qui les retire proprement.
+      $cd = [System.Security.AccessControl.CommonSecurityDescriptor]::new([bool]$op.dossier, $false, [string]$op.sddl)
+      $dacl = $cd.DiscretionaryAcl
+      if ($null -eq $dacl) { throw 'liste d autorisations absente' }
+      $dacl.RemoveInheritedAces()
+      $db = New-Object byte[] $dacl.BinaryLength
+      $dacl.GetBinaryForm($db, 0)
       # 0x4 = DACL ; 0x80000000 = protegee (heritage coupe), 0x40000000 = heritee.
-      if (($raw.ControlFlags -band [System.Security.AccessControl.ControlFlags]::DiscretionaryAclProtected) -ne 0) { $si = [uint32]2147483652 } else { $si = [uint32]1073741828 }
+      if ($cd.IsDiscretionaryAclProtected) { $si = [uint32]2147483652 } else { $si = [uint32]1073741828 }
       $r = [JgSec]::Appliquer([string]$op.chemin, [bool]$op.dossier, [string]$op.id, $null, $db, $si)
     }
     else { throw 'action inconnue' }
@@ -825,7 +823,7 @@ export async function protegerArbre({ racine, elements, jeton, ps, fsImpl = fs, 
   const enfants = [...analyse.aCorriger].sort((a, b) => profondeur(a) - profondeur(b)); // du haut vers le bas
   for (const c of enfants) { const e = infos(c); ops.push({ action: "dacl", chemin: c, sddl: SDDL_HERITAGE_SEUL, id: e.id, dossier: !!e.dossier }); }
   const app = await appliquer(ps, ops);
-  let echec = app.ok ? null : { etape: "application", detail: app.erreur, index: app.index };
+  let echec = app.ok ? null : { etape: "application", detail: app.message ? `${app.erreur}: ${app.message}` : app.erreur, index: app.index };
   if (!echec) {
     const lu = await inspecter(ps, { arbres: [racine] });
     if (!lu.ok) echec = { etape: "verification", detail: lu.code };
