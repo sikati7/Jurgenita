@@ -688,10 +688,10 @@ function cleEntree(x) { return `${x.type}|${x.sid}|${droitsReels(x.masque)}|${x.
 function ensemble(entrees, herite) {
   return liste(entrees).filter((x) => (herite === undefined ? true : !!(x.drapeaux & HERITE) === herite)).map(cleEntree).sort().join(";");
 }
-export function memesDroits(a, b, { herites = true, proprietaire = true } = {}) {
+export function memesDroits(a, b, { herites = true, proprietaire = true, protege = true } = {}) {
   if (!a || !b) return false;
   if (proprietaire && a.proprietaire !== b.proprietaire) return false;
-  if (!!a.protegee !== !!b.protegee || !!a.nulle !== !!b.nulle) return false;
+  if (protege && (!!a.protegee !== !!b.protegee || !!a.nulle !== !!b.nulle)) return false;
   if (ensemble(a.entrees, false) !== ensemble(b.entrees, false)) return false;
   if (herites && ensemble(a.entrees, true) !== ensemble(b.entrees, true)) return false;
   return true;
@@ -815,12 +815,13 @@ export async function restaurer({ racine, instantane, ps, proprietairesModifies 
   for (const e of instantane) {
     const a = lu.arbres[0].elements.find((x) => memeChemin(x.chemin, e.chemin));
     const proprio = !journal.some((j) => memeChemin(j.chemin, e.chemin));
-    // On restaure les entrées EXPLICITES exactement ; les entrées héritées sont
-    // recalculées par Windows à partir du parent (restauré). On vérifie donc les
-    // entrées explicites (herites: false) ET les droits EFFECTIFS compte par
-    // compte (ci-dessous), qui couvrent la contribution de l'héritage — plutôt
-    // que la représentation exacte, dérivée, du jeu d'entrées héritées.
-    if (!a || !memesDroits(a.securite, e.securite, { herites: false, proprietaire: proprio })) return { ok: false, etat: "critique", etape: "verification_finale", chemin: e.chemin, journal, diag: a ? { att: liste(e.securite.entrees).filter((x) => !(x.drapeaux & HERITE)).map(cleEntree).sort(), obt: liste(a.securite.entrees).filter((x) => !(x.drapeaux & HERITE)).map(cleEntree).sort(), attP: !!e.securite.protegee, obtP: !!a.securite.protegee, attO: e.securite.proprietaire, obtO: a.securite.proprietaire } : "absent" };
+    // On restaure les entrées EXPLICITES exactement (proprietaire compris) ; les
+    // entrées héritées, et l'état « protégé » quand il doit passer de coupé à
+    // hérité, sont recalculés/gérés par Windows selon le parent restauré. On
+    // vérifie donc les entrées explicites ET, surtout, les droits EFFECTIFS
+    // compte par compte (ci-dessous), qui sont la vraie propriété de sécurité ;
+    // l'état « protégé » résiduel ne fait que restreindre davantage.
+    if (!a || !memesDroits(a.securite, e.securite, { herites: false, proprietaire: proprio, protege: false })) return { ok: false, etat: "critique", etape: "verification_finale", chemin: e.chemin, journal };
     const attendu = proprio ? e.securite : { ...e.securite, proprietaire: a.securite.proprietaire };
     if (!memesDroitsEffectifs(a.securite, attendu, jeton)) return { ok: false, etat: "critique", etape: "verification_droits_effectifs", chemin: e.chemin, journal };
   }

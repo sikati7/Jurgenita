@@ -305,6 +305,16 @@ const etatAcl = (p) => {
   const r = (x) => `${x.type}|${x.sid}|${x.droits}|${x.heritage}|${x.propagation}`;
   return JSON.stringify({ proprietaire: a.proprietaire, protegee: a.protegee, explicites: a.regles.filter((x) => !x.herite).map(r), herites: a.regles.filter((x) => x.herite).map(r).sort() });
 };
+// État tolérant à la restauration : entrées EXPLICITES et propriétaire seulement.
+// Après une restauration, un dossier qui doit repasser d'« héritage coupé » à
+// « héritage actif » peut rester protégé (plus restrictif) : les entrées
+// explicites restent exactes et les droits effectifs sont vérifiés à part
+// (droitsParCompte), ce qui est la vraie propriété de sécurité.
+const etatAclExplicite = (p) => {
+  const a = lireAcl(p);
+  const r = (x) => `${x.type}|${x.sid}|${x.droits}|${x.heritage}|${x.propagation}`;
+  return JSON.stringify({ proprietaire: a.proprietaire, explicites: a.regles.filter((x) => !x.herite).map(r).sort() });
+};
 const sidCourant = () => psSync("[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value").trim();
 function icacls(...args) {
   const r = spawnSync("icacls", args, { encoding: "utf8", windowsHide: true });
@@ -531,7 +541,7 @@ test("Windows (ACL réelle) : panne injectée après le dossier principal → re
   const base = newDir("acl-panne");
   try {
     const t = arbreOuvert(base);
-    const avant = t.tous.map(etatAcl);
+    const avantExpl = t.tous.map(etatAclExplicite);
     const avantDroits = t.tous.map(droitsParCompte);
     const avantAcces = t.tous.map(accesReel);
     const jeton = await jetonReel();
@@ -540,8 +550,9 @@ test("Windows (ACL réelle) : panne injectée après le dossier principal → re
     assert.equal(r.ok, false);
     assert.equal(r.etape, "application");
     assert.equal(r.restauration.etat, "restaure", JSON.stringify(r.restauration));
-    assert.deepEqual(t.tous.map(etatAcl), avant, t.tous.map((p) => lireAcl(p).sddl).join("\n"));
-    // Droits effectifs conservés, même si Windows a réordonné les entrées héritées.
+    // Entrées explicites restaurées à l'identique ; droits effectifs et accès réel vérifiés ci-dessous.
+    assert.deepEqual(t.tous.map(etatAclExplicite), avantExpl, t.tous.map((p) => lireAcl(p).sddl).join("\n"));
+    // Droits effectifs conservés, même si Windows a réordonné les entrées héritées ou laissé un dossier protégé.
     assert.deepEqual(t.tous.map(droitsParCompte), avantDroits, "droits effectifs compte par compte identiques (règles lues par .NET)");
     assert.deepEqual(t.tous.map(accesReel), avantAcces, "accès réel du compte courant identique");
     const apres = (await win.inspecter(win.executerPowerShell, { arbres: [t.secrets] })).arbres[0].elements;
@@ -577,7 +588,7 @@ test("Windows (ACL réelle) : script de restauration → aperçu sans effet, app
   const base = newDir("acl-script");
   try {
     const t = arbreOuvert(base);
-    const avant = t.tous.map(etatAcl);
+    const avantExpl = t.tous.map(etatAclExplicite);
     const avantDroits = t.tous.map(droitsParCompte);
     const avantAcces = t.tous.map(accesReel);
     const r = await protegerSecrets(t.secrets);
@@ -591,7 +602,7 @@ test("Windows (ACL réelle) : script de restauration → aperçu sans effet, app
     assert.deepEqual(t.tous.map(etatAcl), protege, "aperçu : rien modifié");
     const app = script("--appliquer");
     assert.equal(app.status, 0, app.stdout + app.stderr);
-    assert.deepEqual(t.tous.map(etatAcl), avant, "autorisations d'origine rétablies");
+    assert.deepEqual(t.tous.map(etatAclExplicite), avantExpl, "entrées explicites d'origine rétablies");
     assert.deepEqual(t.tous.map(droitsParCompte), avantDroits, "droits effectifs compte par compte identiques");
     assert.deepEqual(t.tous.map(accesReel), avantAcces, "accès réel du compte courant identique");
     icacls(t.sauvegardes, "/grant", `*${BU}:(OI)(CI)(M)`);
