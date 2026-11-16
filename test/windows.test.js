@@ -559,7 +559,7 @@ test("Windows (ACL réelle) : panne pendant la restauration d'un élément conte
     const moi = sidCourant();
     const jeton = await jetonReel();
     const lu = await win.inspecter(win.executerPowerShell, { arbres: [t.secrets] });
-    const restaurationDeBrands = (op) => op.chemin === t.brandsDir && op.action === "dacl" && op.sddl !== win.SDDL_HERITAGE_SEUL && !op.sddl.startsWith("D:P(");
+    const restaurationDeBrands = (op) => op.chemin === t.brandsDir && op.action === "dacl" && op.phase === "restauration";
     const r = await win.protegerArbre({ racine: t.secrets, elements: lu.arbres[0].elements, jeton, ps: psAvecPanne((op) => (op.chemin === t.kora && op.sddl === win.SDDL_HERITAGE_SEUL) || restaurationDeBrands(op)) });
     assert.equal(r.ok, false);
     assert.equal(r.restauration.etat, "restauration_partielle", JSON.stringify(r.restauration));

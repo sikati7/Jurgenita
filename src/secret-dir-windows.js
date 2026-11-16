@@ -292,18 +292,16 @@ foreach ($op in $in.ops) {
       $r = [JgSec]::Appliquer([string]$op.chemin, [bool]$op.dossier, [string]$op.id, $ob, $null, [uint32]1)
     }
     elseif ($op.action -eq 'dacl') {
-      # On ne pose QUE les entrees explicites : Windows recalcule les entrees
-      # heritees. Les poser soi-meme (drapeau ID) corromprait la liste et pourrait
-      # retirer l acces au proprietaire lui-meme. CommonSecurityDescriptor offre
-      # RemoveInheritedAces(), qui les retire proprement.
-      $cd = [System.Security.AccessControl.CommonSecurityDescriptor]::new([bool]$op.dossier, $false, [string]$op.sddl)
-      $dacl = $cd.DiscretionaryAcl
-      if ($null -eq $dacl) { throw 'liste d autorisations absente' }
-      $dacl.RemoveInheritedAces()
-      $db = New-Object byte[] $dacl.BinaryLength
-      $dacl.GetBinaryForm($db, 0)
+      # Le SDDL recu ne contient QUE des entrees explicites (le filtrage des
+      # entrees heritees est fait cote JavaScript, cf. sddlExplicite) : Windows
+      # recalcule les entrees heritees. On lit simplement la liste et sa forme
+      # binaire, comme pour la liste cible.
+      $raw = [System.Security.AccessControl.RawSecurityDescriptor]::new([string]$op.sddl)
+      if ($null -eq $raw.DiscretionaryAcl) { throw 'liste d autorisations absente' }
+      $db = New-Object byte[] $raw.DiscretionaryAcl.BinaryLength
+      $raw.DiscretionaryAcl.GetBinaryForm($db, 0)
       # 0x4 = DACL ; 0x80000000 = protegee (heritage coupe), 0x40000000 = heritee.
-      if ($cd.IsDiscretionaryAclProtected) { $si = [uint32]2147483652 } else { $si = [uint32]1073741828 }
+      if (($raw.ControlFlags -band [System.Security.AccessControl.ControlFlags]::DiscretionaryAclProtected) -ne 0) { $si = [uint32]2147483652 } else { $si = [uint32]1073741828 }
       $r = [JgSec]::Appliquer([string]$op.chemin, [bool]$op.dossier, [string]$op.id, $null, $db, $si)
     }
     else { throw 'action inconnue' }
@@ -509,6 +507,23 @@ export function nomCompte(sid, noms) {
 // héritées par les sous-dossiers et les fichiers.
 export const sddlCible = (utilisateur) => `D:P(A;OICI;FA;;;${utilisateur})(A;OICI;FA;;;${SID.SYSTEME})(A;OICI;FA;;;${SID.ADMINISTRATEURS})`;
 export const SDDL_HERITAGE_SEUL = "D:AI";
+
+// SDDL d'une liste d'autorisations NE CONTENANT QUE les entrees EXPLICITES
+// (les entrees heritees, drapeau ID, sont retirees). Windows recalcule les
+// entrees heritees a partir du parent ; poser soi-meme des entrees marquees
+// « heritees » corromprait la liste et pourrait retirer l'acces au
+// proprietaire. Le filtrage est fait ici (testable sans Windows) plutot qu'en
+// PowerShell. L'etat « protege » d'origine est conserve.
+const DRAPEAUX_SDDL = [[OI, "OI"], [CI, "CI"], [NP, "NP"], [IO, "IO"]];
+export function sddlExplicite(securite) {
+  if (!securite) return SDDL_HERITAGE_SEUL;
+  const drapeaux = (d) => DRAPEAUX_SDDL.filter(([bit]) => d & bit).map(([, t]) => t).join("");
+  const aces = liste(securite.entrees)
+    .filter((e) => e && !(e.drapeaux & HERITE) && (e.type === ACE_AUTORISER || e.type === ACE_REFUSER) && estSid(e.sid) && e.masque !== null && e.masque !== undefined)
+    .map((e) => `(${e.type === ACE_AUTORISER ? "A" : "D"};${drapeaux(e.drapeaux)};0x${(e.masque >>> 0).toString(16)};;;${e.sid})`)
+    .join("");
+  return `D:${securite.protegee ? "P" : "AI"}${aces}`;
+}
 
 const autorisesCible = (jeton) => new Set([jeton.utilisateur, SID.SYSTEME, SID.ADMINISTRATEURS]);
 const confiancesParents = (jeton) => new Set([jeton.utilisateur, SID.SYSTEME, SID.ADMINISTRATEURS, SID.TRUSTED_INSTALLER]);
@@ -764,12 +779,16 @@ export async function restaurer({ racine, instantane, ps, proprietairesModifies 
   const journal = [];
   const principal = instantane.find((e) => memeChemin(e.chemin, racine));
   const enfants = instantane.filter((e) => e !== principal).sort((a, b) => profondeur(b.chemin) - profondeur(a.chemin));
+  // « phase: restauration » : indication ignorée par le vrai PowerShell (qui ne
+  // lit que action/chemin/sddl/sid/id/dossier) ; elle sert au modèle simulé des
+  // tests à distinguer une restauration d'une protection.
   const restaurerElement = async (e) => {
     if (proprietairesModifies.some((p) => memeChemin(p, e.chemin)) && e.securite?.proprietaire) {
-      const o = await appliquer(ps, [{ action: "proprietaire", chemin: e.chemin, sid: e.securite.proprietaire, id: e.id, dossier: !!e.dossier }]);
+      const o = await appliquer(ps, [{ action: "proprietaire", chemin: e.chemin, sid: e.securite.proprietaire, id: e.id, dossier: !!e.dossier, phase: "restauration" }]);
       if (!o.ok) journal.push({ chemin: e.chemin, code: "proprietaire_non_retabli" });
     }
-    return appliquer(ps, [{ action: "dacl", chemin: e.chemin, sddl: e.securite.sddl, id: e.id, dossier: !!e.dossier }]);
+    // On restaure UNIQUEMENT les entrees explicites (Windows recalcule l'heritage).
+    return appliquer(ps, [{ action: "dacl", chemin: e.chemin, sddl: sddlExplicite(e.securite), id: e.id, dossier: !!e.dossier, phase: "restauration" }]);
   };
   for (const e of enfants) {
     const r = await restaurerElement(e);

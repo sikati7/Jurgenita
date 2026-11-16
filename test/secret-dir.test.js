@@ -445,14 +445,31 @@ function modeleWindows(initial, jeton) {
     }
     const { ops } = JSON.parse(env.JG_OPERATIONS);
     const resultats = [];
+    // Interprète un SDDL d'autorisations (cible, héritage pur ou restauration
+    // explicite) comme le ferait Windows : état « protégé » + entrées explicites.
+    const analyserSddl = (sddl) => {
+      const protegee = sddl.startsWith("D:P");
+      const explicites = [];
+      const re = /\(([AD]);([A-Za-z]*);([^;]+);;;([^)]+)\)/g;
+      let m;
+      while ((m = re.exec(sddl))) {
+        let d = 0;
+        if (m[2].includes("OI")) d |= OI;
+        if (m[2].includes("CI")) d |= CI;
+        if (m[2].includes("IO")) d |= IO;
+        explicites.push(ace(m[1] === "A" ? 0 : 1, m[4], m[3] === "FA" ? DROIT.CONTROLE_TOTAL : parseInt(m[3], 16), d));
+      }
+      return { protegee, explicites };
+    };
     for (const op of ops) {
-      journal.push(`${op.action}:${op.sddl?.startsWith("JSON:") ? "restauration" : op.sddl === win.SDDL_HERITAGE_SEUL ? "heritage" : op.sddl ? "cible" : "proprietaire"}:${op.chemin}`);
+      const genre = op.action === "proprietaire" ? "proprietaire"
+        : op.phase === "restauration" ? "restauration"
+        : op.sddl === win.SDDL_HERITAGE_SEUL ? "heritage" : "cible";
+      journal.push(`${op.action}:${genre}:${op.chemin}`);
       if (panne(op)) { resultats.push({ ok: false, erreur: "PanneSimulee" }); break; }
       const it = etat.get(op.chemin);
       if (op.action === "proprietaire") it.proprietaire = op.sid;
-      else if (op.sddl.startsWith("JSON:")) { Object.assign(it, JSON.parse(op.sddl.slice(5))); restaure = true; }
-      else if (op.sddl === win.SDDL_HERITAGE_SEUL) Object.assign(it, { protegee: false, explicites: [] });
-      else Object.assign(it, { protegee: true, explicites: cible(jeton.utilisateur) });
+      else { Object.assign(it, analyserSddl(op.sddl)); if (genre === "restauration") restaure = true; }
       resultats.push({ ok: true });
     }
     return { ok: true, resultats };
@@ -506,7 +523,7 @@ test("Windows (simulé) : panne après le dossier principal → restauration (co
 
 test("Windows (simulé) : panne pendant la restauration d'un élément contenu → dossier principal NON restauré, resté protégé", async () => {
   const { j, R, m } = scenarioWindows();
-  m.definirPanne((op) => (op.chemin === `${R}\\brands` && op.sddl === win.SDDL_HERITAGE_SEUL) || (op.chemin === `${R}\\brands\\kora.json` && op.sddl?.startsWith("JSON:")));
+  m.definirPanne((op) => (op.chemin === `${R}\\brands` && op.sddl === win.SDDL_HERITAGE_SEUL) || (op.chemin === `${R}\\brands\\kora.json` && op.phase === "restauration"));
   const r = await win.protegerArbre({ racine: R, elements: await elementsDe(m, R), jeton: j, ps: m.ps, fsImpl: FS_NUL });
   assert.equal(r.ok, false);
   assert.equal(r.restauration.etat, "restauration_partielle");
@@ -516,7 +533,7 @@ test("Windows (simulé) : panne pendant la restauration d'un élément contenu �
 
 test("Windows (simulé) : panne pendant la restauration du dossier principal → état critique signalé", async () => {
   const { j, R, m } = scenarioWindows();
-  m.definirPanne((op) => (op.chemin === `${R}\\brands\\kora.json` && op.sddl === win.SDDL_HERITAGE_SEUL) || (op.chemin === R && op.sddl?.startsWith("JSON:")));
+  m.definirPanne((op) => (op.chemin === `${R}\\brands\\kora.json` && op.sddl === win.SDDL_HERITAGE_SEUL) || (op.chemin === R && op.phase === "restauration"));
   const r = await win.protegerArbre({ racine: R, elements: await elementsDe(m, R), jeton: j, ps: m.ps, fsImpl: FS_NUL });
   assert.equal(r.restauration.etat, "critique");
 });
@@ -638,6 +655,20 @@ test("Windows (simulé) : propriétaire non rétabli pendant la restauration →
   };
   const r = await win.restaurer({ racine: R, instantane, ps: psOwnerKO, proprietairesModifies: [`${R}\\brands`], jeton: j });
   assert.ok((r.journal || []).some((x) => x.code === "proprietaire_non_retabli" && x.chemin === `${R}\\brands`), JSON.stringify(r.journal));
+});
+
+test("sddlExplicite : ne garde que les entrées explicites, conserve l'état protégé (restauration, point 1)", () => {
+  // Tout hérité → liste vide (héritage pur) ; Windows recalcule l'héritage.
+  assert.equal(win.sddlExplicite({ protegee: false, entrees: [ace(0, U, DROIT.CONTROLE_TOTAL, OI | CI | ID)] }), "D:AI");
+  // Protégé : entrées explicites conservées.
+  assert.equal(win.sddlExplicite({ protegee: true, entrees: [ace(0, U, DROIT.CONTROLE_TOTAL, OI | CI), ace(0, SID.SYSTEME, DROIT.CONTROLE_TOTAL, OI | CI)] }),
+    `D:P(A;OICI;0x1f01ff;;;${U})(A;OICI;0x1f01ff;;;${SID.SYSTEME})`);
+  // Non protégé : explicite gardée, héritée retirée.
+  assert.equal(win.sddlExplicite({ protegee: false, entrees: [ace(0, "S-1-5-32-545", 0x1200a9, OI | CI), ace(0, U, DROIT.CONTROLE_TOTAL, OI | CI | ID)] }),
+    "D:AI(A;OICI;0x1200a9;;;S-1-5-32-545)");
+  // Refus explicite conservé (type 1 = deny).
+  assert.equal(win.sddlExplicite({ protegee: false, entrees: [ace(1, U, 0x120089, 0)] }), `D:AI(D;;0x120089;;;${U})`);
+  assert.equal(win.sddlExplicite(null), "D:AI");
 });
 
 test("sauvegarde : jamais écrasée — nom déjà pris = autre nom, sinon échec ; l'existante reste intacte ; aucun temporaire laissé", () => {
