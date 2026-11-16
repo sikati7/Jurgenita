@@ -85,13 +85,15 @@ async function acquerirWindows() {
   if (!jeton.certain) sortir(4, "Restauration refusée par prudence :", `  - Jeton incertain (${jeton.problemes.join(" ; ")}).`);
   const elementsSv = luSv.arbres[0].elements;
   const a = win.analyserArbre({ racine: sauvegardes, elements: elementsSv, jeton, noms: luSv.noms });
-  if (!a.conforme) sortir(4, "Restauration refusée par prudence :", "  - Le dossier des sauvegardes n'est pas protégé (vous, SYSTEM, Administrateurs uniquement) : un autre compte a pu modifier la sauvegarde.");
   const f = elementsSv.find((x) => egaux(x.chemin, fichier));
+  // Contrôles propres au FICHIER de sauvegarde d'abord (messages précis), puis
+  // protection du dossier des sauvegardes lui-même (racine + propriétaires).
   if (!f || !f.existe) sortir(3, `Sauvegarde introuvable dans ${sauvegardes}.`);
   if (f.reparse) sortir(4, "Restauration refusée par prudence :", "  - Sauvegarde altérée : le fichier de sauvegarde est un lien ou une jonction.");
   if (!f.securite) sortir(4, "Restauration refusée par prudence :", "  - Autorisations du fichier de sauvegarde illisibles.");
   if (!win.proprietaireAutorise(f.securite, jeton)) sortir(4, "Restauration refusée par prudence :", `  - Sauvegarde altérée : le fichier appartient à ${win.nomCompte(f.securite.proprietaire, luSv.noms)}, pas à vous, SYSTEM ou Administrateurs.`);
   if (!win.enfantConforme(f.securite, jeton)) sortir(4, "Restauration refusée par prudence :", "  - Sauvegarde altérée : les autorisations du fichier ne sont plus celles attendues (vous, SYSTEM et Administrateurs, par héritage du dossier des sauvegardes).");
+  if (a.racineACorriger || a.proprietaires.length) sortir(4, "Restauration refusée par prudence :", "  - Le dossier des sauvegardes n'est pas protégé (vous, SYSTEM, Administrateurs uniquement) : un autre compte a pu modifier la sauvegarde.");
   // Dossier et fichier vérifiés : lecture du contenu.
   let texte;
   try { texte = fs.readFileSync(fichier, "utf8"); } catch (err) { sortir(3, `Sauvegarde illisible (${err.code}).`); }

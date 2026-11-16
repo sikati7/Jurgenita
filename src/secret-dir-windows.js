@@ -815,8 +815,12 @@ export async function restaurer({ racine, instantane, ps, proprietairesModifies 
   for (const e of instantane) {
     const a = lu.arbres[0].elements.find((x) => memeChemin(x.chemin, e.chemin));
     const proprio = !journal.some((j) => memeChemin(j.chemin, e.chemin));
-    if (!a || !memesDroits(a.securite, e.securite, { herites: true, proprietaire: proprio })) return { ok: false, etat: "critique", etape: "verification_finale", chemin: e.chemin, journal };
-    // Droits effectifs identiques, quel que soit l'ordre des entrées héritées recalculées par Windows.
+    // On restaure les entrées EXPLICITES exactement ; les entrées héritées sont
+    // recalculées par Windows à partir du parent (restauré). On vérifie donc les
+    // entrées explicites (herites: false) ET les droits EFFECTIFS compte par
+    // compte (ci-dessous), qui couvrent la contribution de l'héritage — plutôt
+    // que la représentation exacte, dérivée, du jeu d'entrées héritées.
+    if (!a || !memesDroits(a.securite, e.securite, { herites: false, proprietaire: proprio })) return { ok: false, etat: "critique", etape: "verification_finale", chemin: e.chemin, journal };
     const attendu = proprio ? e.securite : { ...e.securite, proprietaire: a.securite.proprietaire };
     if (!memesDroitsEffectifs(a.securite, attendu, jeton)) return { ok: false, etat: "critique", etape: "verification_droits_effectifs", chemin: e.chemin, journal };
   }
