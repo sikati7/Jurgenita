@@ -424,7 +424,11 @@ public static class JgSec {
       bool dossier = (i.FileAttributes & ATTR_DIRECTORY) != 0;
       if (dossier != attenduDossier) return "type";
       if (idAttendu != null && idAttendu.Length > 0 && Ident(i) != idAttendu) return "identite";
-      uint rc = SetSecurityInfo(h, 6, securityInfo, owner, null, dacl, null);
+      // SE_FILE_OBJECT (1), pas SE_KERNEL_OBJECT (6) : seul SE_FILE_OBJECT
+      // declenche l'heritage NTFS (materialisation des ACE heritees sur les
+      // enfants). Avec SE_KERNEL_OBJECT, un sous-dossier remis en heritage pur
+      // reste sans ACE effective et devient illisible, meme par le proprietaire.
+      uint rc = SetSecurityInfo(h, 1, securityInfo, owner, null, dacl, null);
       if (rc != 0) return "application:" + rc;
       return "";
     } finally { CloseHandle(h); }
