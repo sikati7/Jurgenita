@@ -820,7 +820,7 @@ export async function restaurer({ racine, instantane, ps, proprietairesModifies 
     // entrées explicites (herites: false) ET les droits EFFECTIFS compte par
     // compte (ci-dessous), qui couvrent la contribution de l'héritage — plutôt
     // que la représentation exacte, dérivée, du jeu d'entrées héritées.
-    if (!a || !memesDroits(a.securite, e.securite, { herites: false, proprietaire: proprio })) return { ok: false, etat: "critique", etape: "verification_finale", chemin: e.chemin, journal };
+    if (!a || !memesDroits(a.securite, e.securite, { herites: false, proprietaire: proprio })) return { ok: false, etat: "critique", etape: "verification_finale", chemin: e.chemin, journal, diag: a ? { att: liste(e.securite.entrees).filter((x) => !(x.drapeaux & HERITE)).map(cleEntree).sort(), obt: liste(a.securite.entrees).filter((x) => !(x.drapeaux & HERITE)).map(cleEntree).sort(), attP: !!e.securite.protegee, obtP: !!a.securite.protegee, attO: e.securite.proprietaire, obtO: a.securite.proprietaire } : "absent" };
     const attendu = proprio ? e.securite : { ...e.securite, proprietaire: a.securite.proprietaire };
     if (!memesDroitsEffectifs(a.securite, attendu, jeton)) return { ok: false, etat: "critique", etape: "verification_droits_effectifs", chemin: e.chemin, journal };
   }
